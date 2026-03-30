@@ -20,8 +20,8 @@ module Kitchen
       required_config :proxmox_url
       required_config :proxmox_token_id
       required_config :proxmox_token_secret
-      required_config :node
-      required_config :template_id
+      default_config :node, nil
+      default_config :template_id, nil
 
       default_config :ssl_verify, true
       default_config :pool, nil
@@ -37,19 +37,8 @@ module Kitchen
       def create(state)
         return if state[:vm_id]
 
-        info("Creating Proxmox VM from template #{config[:template_id]}...")
-
-        vm_id = allocate_vm_id
-        vm_name = generate_vm_name(instance.name)
-
-        clone_template(vm_id, vm_name)
-        configure_hardware(vm_id)
-        start_and_wait_for_ip(state, vm_id)
-
-        state[:vm_id] = vm_id
-        state[:vm_name] = vm_name
-
-        info("Proxmox VM #{vm_name} (#{vm_id}) created.")
+        validate_config!
+        clone_and_start(state)
       end
 
       def destroy(state)
@@ -72,6 +61,22 @@ module Kitchen
           token_secret: config[:proxmox_token_secret],
           ssl_verify: config[:ssl_verify]
         )
+      end
+
+      def clone_and_start(state)
+        info("Creating Proxmox VM from template #{config[:template_id]}...")
+
+        vm_id = allocate_vm_id
+        vm_name = generate_vm_name(instance.name)
+
+        clone_template(vm_id, vm_name)
+        configure_hardware(vm_id)
+        start_and_wait_for_ip(state, vm_id)
+
+        state[:vm_id] = vm_id
+        state[:vm_name] = vm_name
+
+        info("Proxmox VM #{vm_name} (#{vm_id}) created.")
       end
 
       def allocate_vm_id
@@ -154,6 +159,43 @@ module Kitchen
           end
         end
         nil
+      end
+
+      def validate_config!
+        errors = []
+        errors << validate_node if config[:node].nil?
+        errors << validate_template_id if config[:template_id].nil?
+        return if errors.empty?
+
+        raise Kitchen::UserError, errors.join("\n\n")
+      end
+
+      def validate_node
+        msg = "Missing required config: node\n"
+        begin
+          nodes = api_client.list_nodes
+          msg += "Available Proxmox nodes:\n"
+          nodes.each { |n| msg += "  - #{n['node']} (#{n['status']})\n" }
+        rescue ::StandardError
+          msg += "  (could not retrieve node list from Proxmox API)\n"
+        end
+        msg
+      end
+
+      def validate_template_id
+        msg = "Missing required config: template_id\n"
+        msg + format_template_list
+      end
+
+      def format_template_list
+        templates = api_client.list_templates
+        return "  No templates found on the Proxmox cluster.\n" if templates.empty?
+
+        lines = "Available templates:\n"
+        templates.each { |t| lines += "  - #{t['vmid']}: #{t['name']} (node: #{t['node']})\n" }
+        lines
+      rescue ::StandardError
+        "  (could not retrieve template list from Proxmox API)\n"
       end
 
       def clear_state(state)

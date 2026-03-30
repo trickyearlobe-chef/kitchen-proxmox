@@ -188,6 +188,45 @@ RSpec.describe Kitchen::Driver::Proxmox::ApiClient do
     end
   end
 
+  describe '#list_nodes' do
+    it 'returns an array of node hashes' do
+      nodes = [
+        { 'node' => 'pve1', 'status' => 'online', 'cpu' => 0.05, 'maxcpu' => 4 },
+        { 'node' => 'pve2', 'status' => 'online', 'cpu' => 0.12, 'maxcpu' => 8 }
+      ]
+      allow(http).to receive(:request).and_return(json_response(nodes))
+
+      result = client.list_nodes
+      expect(result.length).to eq(2)
+      expect(result.first['node']).to eq('pve1')
+    end
+  end
+
+  describe '#list_templates' do
+    it 'returns only resources where template is 1' do
+      resources = [
+        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve1', 'template' => 1, 'status' => 'stopped' },
+        { 'vmid' => 100, 'name' => 'webserver', 'node' => 'pve1', 'template' => 0, 'status' => 'running' },
+        { 'vmid' => 9001, 'name' => 'debian-12', 'node' => 'pve2', 'template' => 1, 'status' => 'stopped' }
+      ]
+      allow(http).to receive(:request).and_return(json_response(resources))
+
+      result = client.list_templates
+      expect(result.length).to eq(2)
+      expect(result.map { |t| t['vmid'] }).to eq([9000, 9001])
+    end
+
+    it 'returns an empty array when no templates exist' do
+      resources = [
+        { 'vmid' => 100, 'name' => 'webserver', 'node' => 'pve1', 'template' => 0, 'status' => 'running' }
+      ]
+      allow(http).to receive(:request).and_return(json_response(resources))
+
+      result = client.list_templates
+      expect(result).to eq([])
+    end
+  end
+
   describe 'error handling' do
     it 'raises on non-success HTTP response' do
       allow(http).to receive(:request).and_return(error_response('500', 'Internal Server Error'))

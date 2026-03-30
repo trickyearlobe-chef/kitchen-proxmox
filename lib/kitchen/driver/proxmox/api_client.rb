@@ -86,6 +86,15 @@ module Kitchen
           get("/api2/json/nodes/#{node}/qemu/#{vm_id}/agent/network-get-interfaces")
         end
 
+        def list_nodes
+          get('/api2/json/nodes')
+        end
+
+        def list_templates
+          resources = get('/api2/json/cluster/resources?type=vm')
+          resources.select { |r| r['template'] == 1 }
+        end
+
         private
 
         def get(path)

@@ -44,12 +44,16 @@ RSpec.describe Kitchen::Driver::Proxmox do
       expect(validations).to have_key(:proxmox_token_secret)
     end
 
-    it 'declares node as required' do
-      expect(validations).to have_key(:node)
+    it 'defaults node to nil' do
+      d = described_class.new(driver_config.reject { |k| k == :node })
+      allow(d).to receive(:instance).and_return(kitchen_instance)
+      expect(d[:node]).to be_nil
     end
 
-    it 'declares template_id as required' do
-      expect(validations).to have_key(:template_id)
+    it 'defaults template_id to nil' do
+      d = described_class.new(driver_config.reject { |k| k == :template_id })
+      allow(d).to receive(:instance).and_return(kitchen_instance)
+      expect(d[:template_id]).to be_nil
     end
 
     it 'defaults ssl_verify to true' do
@@ -78,6 +82,74 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'defaults storage to nil' do
       expect(driver[:storage]).to be_nil
+    end
+  end
+
+  describe 'helpful validation' do
+    let(:api_client) { instance_double(Kitchen::Driver::Proxmox::ApiClient) }
+
+    before do
+      allow(driver).to receive(:api_client).and_return(api_client)
+    end
+
+    context 'when node is missing' do
+      let(:driver_config) { super().merge(node: nil) }
+
+      it 'lists available nodes and raises Kitchen::UserError' do
+        allow(api_client).to receive(:list_nodes).and_return(
+          [{ 'node' => 'pve1', 'status' => 'online' }, { 'node' => 'pve2', 'status' => 'online' }]
+        )
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /node/)
+      end
+
+      it 'includes node names in the error message' do
+        allow(api_client).to receive(:list_nodes).and_return(
+          [{ 'node' => 'pve1', 'status' => 'online' }, { 'node' => 'pve2', 'status' => 'online' }]
+        )
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /pve1.*pve2/m)
+      end
+    end
+
+    context 'when template_id is missing' do
+      let(:driver_config) { super().merge(template_id: nil) }
+
+      it 'lists available templates and raises Kitchen::UserError' do
+        allow(api_client).to receive(:list_templates).and_return(
+          [{ 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve' }]
+        )
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /template_id/)
+      end
+
+      it 'includes template VMID and name in the error message' do
+        allow(api_client).to receive(:list_templates).and_return(
+          [{ 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve' },
+           { 'vmid' => 9001, 'name' => 'debian-12', 'node' => 'pve' }]
+        )
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /9000.*ubuntu-2204.*9001.*debian-12/m)
+      end
+    end
+
+    context 'when both node and template_id are missing' do
+      let(:driver_config) { super().merge(node: nil, template_id: nil) }
+
+      it 'lists both nodes and templates in the error' do
+        allow(api_client).to receive(:list_nodes).and_return(
+          [{ 'node' => 'pve1', 'status' => 'online' }]
+        )
+        allow(api_client).to receive(:list_templates).and_return(
+          [{ 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve1' }]
+        )
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /node.*template_id/m)
+      end
+    end
+
+    context 'when API call fails during validation' do
+      let(:driver_config) { super().merge(node: nil) }
+
+      it 'still raises a useful error without the list' do
+        allow(api_client).to receive(:list_nodes).and_raise(StandardError, 'connection refused')
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /node/)
+      end
     end
   end
 
