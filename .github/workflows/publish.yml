@@ -1,8 +1,9 @@
 name: Publish Gem
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   publish:
