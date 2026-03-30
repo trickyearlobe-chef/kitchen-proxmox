@@ -1,34 +1,28 @@
-name: Publish Gem
-
+# .github/workflows/push_gem.yml
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
-  publish:
+  push:
+    name: Push gem to RubyGems.org
     runs-on: ubuntu-latest
+
     permissions:
-      contents: read
-      id-token: write
+      id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
+      contents: write # IMPORTANT: this permission is required for `rake release` to push the release tag
 
     steps:
-      - uses: actions/checkout@v4
+      # Set up
+      - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
-
-      - uses: ruby/setup-ruby@v1
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.3"
+          bundler-cache: true
+          ruby-version: ruby
 
-      - name: Build gem
-        run: gem build kitchen-proxmox.gemspec
-
-      - name: Push to RubyGems
-        run: |
-          mkdir -p ~/.gem
-          echo "---" > ~/.gem/credentials
-          echo ":rubygems_api_key: ${{ secrets.RUBYGEMS_API_KEY }}" >> ~/.gem/credentials
-          chmod 0600 ~/.gem/credentials
-          gem push kitchen-proxmox-*.gem
-          rm -f ~/.gem/credentials
+      # Release
+      - uses: rubygems/release-gem@v1
