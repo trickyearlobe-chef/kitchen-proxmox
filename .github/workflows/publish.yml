@@ -24,4 +24,14 @@ jobs:
         with:
           ruby-version: '3.3'
 
-      - uses: rubygems/release-gem@v1
+      - name: Configure RubyGems trusted publishing credentials
+        uses: rubygems/configure-rubygems-credentials@bc6dd217f8a4f919d6835fcfefd470ef821f5c44 # v1.0.0
+
+      - name: Build gem
+        run: gem build kitchen-proxmox.gemspec
+
+      - name: Push to RubyGems
+        run: gem push kitchen-proxmox-*.gem
+
+      - name: Wait for release to propagate
+        run: gem exec rubygems-await kitchen-proxmox-*.gem
