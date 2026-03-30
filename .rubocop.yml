@@ -1,0 +1,12 @@
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: enable
+
+Metrics/BlockLength:
+  Exclude:
+    - spec/**/*
+
+Metrics/ClassLength:
+  Exclude:
+    - lib/kitchen/driver/proxmox.rb
+    - lib/kitchen/driver/proxmox/api_client.rb
