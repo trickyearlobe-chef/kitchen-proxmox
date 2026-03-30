@@ -6,7 +6,23 @@ MAJOR := $(word 1,$(subst ., ,$(CURRENT_VERSION)))
 MINOR := $(word 2,$(subst ., ,$(CURRENT_VERSION)))
 PATCH := $(word 3,$(subst ., ,$(CURRENT_VERSION)))
 
-.PHONY: all spec style clean install bump-patch bump-minor bump-major release version
+.PHONY: help all spec style clean install bump-patch bump-minor bump-major release version
+
+.DEFAULT_GOAL := help
+
+help:
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "  spec         Run rspec tests"
+	@echo "  style        Run rubocop"
+	@echo "  all          Run spec + style"
+	@echo "  install      Build and install the gem locally"
+	@echo "  clean        Remove build artifacts"
+	@echo "  version      Show current version (from git tags)"
+	@echo "  bump-patch   Tag a patch release  (x.y.Z+1)"
+	@echo "  bump-minor   Tag a minor release  (x.Y+1.0)"
+	@echo "  bump-major   Tag a major release  (X+1.0.0)"
+	@echo "  release      Push main and tags to origin"
 
 all: spec style
 

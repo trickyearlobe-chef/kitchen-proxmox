@@ -11,6 +11,7 @@
 - Rules are specific and actionable.
 - Hard constraints use NEVER in caps. No ambiguity.
 - Explicit permission boundaries — say what needs human approval.
+- When a user request conflicts with a NEVER rule, stop and flag the conflict. Do not proceed until the user explicitly confirms. Confirmation applies to that single action only — it does not relax the rule for the rest of the session.
 - No implementation code in CLAUDE.md or specs. That's what TDD is for.
 - NEVER use the console/terminal for file editing. Always use `file-edit-mcp` tools (`fem_*`) for file operations.
 

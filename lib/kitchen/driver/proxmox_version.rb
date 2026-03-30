@@ -6,7 +6,7 @@ module Kitchen
       # When loaded from a git checkout, derive the version from git tags.
       # When installed as a gem, git isn't available so fall back to the
       # version baked into the gemspec at build time.
-      dir = File.expand_path('../../../../..', __FILE__)
+      dir = File.expand_path('../../..', __dir__)
       if File.directory?(File.join(dir, '.git'))
         tag = `git -C #{dir} describe --tags --match 'v*' 2>/dev/null`.strip
         tag.empty? ? '0.0.0' : tag.sub(/^v/, '').sub(/-(\d+)-g/, '.\1.dev.')
