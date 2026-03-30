@@ -16,7 +16,7 @@ Gem::Specification.new do |spec|
   spec.homepage      = 'https://github.com/trickyearlobe-chef/kitchen-proxmox'
   spec.license       = 'Apache-2.0'
 
-  spec.files         = Dir['lib/**/*', 'LICENSE', 'README.md', 'CHANGELOG.md']
+  spec.files         = Dir['lib/**/*', 'LICENSE', 'README.md']
   spec.require_paths = ['lib']
 
   spec.required_ruby_version = '>= 3.1'
@@ -31,5 +31,4 @@ Gem::Specification.new do |spec|
   spec.metadata['rubygems_mfa_required'] = 'true'
   spec.metadata['source_code_uri']        = 'https://github.com/trickyearlobe-chef/kitchen-proxmox'
   spec.metadata['bug_tracker_uri']        = 'https://github.com/trickyearlobe-chef/kitchen-proxmox/issues'
-  spec.metadata['changelog_uri']          = 'https://github.com/trickyearlobe-chef/kitchen-proxmox/blob/main/CHANGELOG.md'
 end
