@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'kitchen'
-require 'securerandom'
 require_relative 'proxmox_version'
 require_relative 'proxmox/api_client'
 
@@ -84,7 +83,7 @@ module Kitchen
       end
 
       def generate_vm_name(suite_name)
-        "#{config[:vm_name_prefix]}#{suite_name}-#{SecureRandom.hex(4)}"
+        "#{config[:vm_name_prefix]}#{suite_name}-#{Time.now.to_i}"
       end
 
       def clone_template(vm_id, vm_name)

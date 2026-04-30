@@ -219,10 +219,10 @@ RSpec.describe Kitchen::Driver::Proxmox do
       expect(state[:hostname]).to eq('10.0.0.5')
     end
 
-    it 'generates a vm_name with prefix and random suffix' do
+    it 'generates a vm_name with prefix and unix timestamp suffix' do
       state = {}
       driver.create(state)
-      expect(state[:vm_name]).to match(/\Akitchen-default-ubuntu-2204-[0-9a-f]{8}\z/)
+      expect(state[:vm_name]).to match(/\Akitchen-default-ubuntu-2204-\d{10,}\z/)
     end
   end
 
