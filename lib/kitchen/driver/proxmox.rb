@@ -2,6 +2,7 @@
 
 require 'kitchen'
 require_relative 'proxmox_version'
+require_relative 'proxmox/errors'
 require_relative 'proxmox/api_client'
 
 module Kitchen
@@ -15,6 +16,8 @@ module Kitchen
       kitchen_driver_api_version 2
 
       plugin_version Kitchen::Driver::PROXMOX_VERSION
+
+      ApiError = Kitchen::Driver::ProxmoxErrors::ApiError
 
       required_config :proxmox_url
       required_config :proxmox_token_id
@@ -32,6 +35,7 @@ module Kitchen
       default_config :clone_timeout, 300
       default_config :start_timeout, 300
       default_config :ip_wait_timeout, 120
+      default_config :clone_retries, 5
 
       def create(state)
         return if state[:vm_id]
@@ -65,17 +69,41 @@ module Kitchen
       def clone_and_start(state)
         info("Creating Proxmox VM from template #{config[:template_id]}...")
 
-        vm_id = allocate_vm_id
-        vm_name = generate_vm_name(instance.name)
-
-        clone_template(vm_id, vm_name)
-        configure_hardware(vm_id)
-        start_and_wait_for_ip(state, vm_id)
-
+        vm_id, vm_name = allocate_and_clone
         state[:vm_id] = vm_id
         state[:vm_name] = vm_name
 
+        configure_hardware(vm_id)
+        start_and_wait_for_ip(state, vm_id)
+
         info("Proxmox VM #{vm_name} (#{vm_id}) created.")
+      end
+
+      def allocate_and_clone
+        retries = config[:clone_retries]
+        last_error = nil
+
+        retries.times do |attempt|
+          vm_id = allocate_vm_id
+          vm_name = generate_vm_name(instance.name)
+
+          begin
+            clone_template(vm_id, vm_name)
+            return [vm_id, vm_name]
+          rescue ApiError => e
+            raise unless e.vmid_conflict?
+
+            last_error = e
+            warn("VMID #{vm_id} conflict (attempt #{attempt + 1}/#{retries}), retrying...")
+            sleep backoff_delay(attempt)
+          end
+        end
+
+        raise last_error
+      end
+
+      def backoff_delay(attempt)
+        (0.5 * (2**attempt)) + rand(0.0..1.0)
       end
 
       def allocate_vm_id

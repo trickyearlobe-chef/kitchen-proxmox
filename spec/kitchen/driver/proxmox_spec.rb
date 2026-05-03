@@ -224,6 +224,72 @@ RSpec.describe Kitchen::Driver::Proxmox do
       driver.create(state)
       expect(state[:vm_name]).to match(/\Akitchen-default-ubuntu-2204-\d{10,}\z/)
     end
+
+    context 'VMID conflict retry' do
+      let(:conflict_error) do
+        Kitchen::Driver::Proxmox::ApiError.new(400, '{"errors":{"newid":"VM 113 already exists"}}')
+      end
+
+      before do
+        allow(driver).to receive(:sleep)
+      end
+
+      it 'retries with a new VMID on conflict' do
+        call_count = 0
+        allow(api_client).to receive(:next_vm_id) do
+          call_count += 1
+          (112 + call_count).to_s
+        end
+        allow(api_client).to receive(:clone_vm) do |**args|
+          raise conflict_error if args[:new_id] == 113
+
+          'UPID:pve:clone'
+        end
+
+        state = {}
+        driver.create(state)
+        expect(state[:vm_id]).to eq(114)
+      end
+
+      it 'persists vm_id immediately after successful clone' do
+        allow(api_client).to receive(:configure_vm).and_raise('hardware config failed')
+        state = {}
+        expect { driver.create(state) }.to raise_error(/hardware config failed/)
+        expect(state[:vm_id]).to eq(200)
+      end
+
+      it 'raises after exhausting retries' do
+        allow(api_client).to receive(:clone_vm).and_raise(conflict_error)
+        allow(api_client).to receive(:next_vm_id).and_return('113')
+        state = {}
+        expect { driver.create(state) }.to raise_error(Kitchen::Driver::Proxmox::ApiError, /already exists/)
+      end
+
+      it 'does not retry on non-conflict errors' do
+        auth_error = Kitchen::Driver::Proxmox::ApiError.new(401, 'unauthorized')
+        allow(api_client).to receive(:clone_vm).and_raise(auth_error)
+        state = {}
+        expect(api_client).to receive(:next_vm_id).once
+        expect { driver.create(state) }.to raise_error(Kitchen::Driver::Proxmox::ApiError, /unauthorized/)
+      end
+
+      it 'uses exponential backoff with jitter between retries' do
+        call_count = 0
+        allow(api_client).to receive(:next_vm_id) do
+          call_count += 1
+          (112 + call_count).to_s
+        end
+        allow(api_client).to receive(:clone_vm) do |**args|
+          raise conflict_error if args[:new_id] < 115
+
+          'UPID:pve:clone'
+        end
+
+        state = {}
+        expect(driver).to receive(:sleep).at_least(:twice)
+        driver.create(state)
+      end
+    end
   end
 
   describe '#destroy' do

@@ -5,6 +5,7 @@ require 'json'
 require 'uri'
 require 'openssl'
 require 'kitchen'
+require_relative 'errors'
 
 module Kitchen
   module Driver
@@ -145,7 +146,7 @@ module Kitchen
         end
 
         def handle_response(response)
-          raise "Proxmox API error #{response.code}: #{response.body}" unless response.is_a?(Net::HTTPSuccess)
+          raise ProxmoxErrors::ApiError.new(response.code, response.body) unless response.is_a?(Net::HTTPSuccess)
 
           JSON.parse(response.body)['data']
         end
