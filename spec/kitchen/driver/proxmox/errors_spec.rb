@@ -20,6 +20,11 @@ RSpec.describe Kitchen::Driver::ProxmoxErrors::ApiError do
       expect(err.vmid_conflict?).to be true
     end
 
+    it 'returns true for lock file timeout (concurrent clone race)' do
+      err = described_class.new(500, '{"data":null,"message":"can\'t lock file \'/var/lock/qemu-server/lock-116.conf\' - got timeout\\n"}')
+      expect(err.vmid_conflict?).to be true
+    end
+
     it 'returns false for auth errors' do
       err = described_class.new(401, '{"errors":{"username":"invalid credentials"}}')
       expect(err.vmid_conflict?).to be false
