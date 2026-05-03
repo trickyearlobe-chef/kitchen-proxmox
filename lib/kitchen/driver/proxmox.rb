@@ -67,16 +67,33 @@ module Kitchen
       end
 
       def clone_and_start(state)
-        info("Creating Proxmox VM from template #{config[:template_id]}...")
+        retries = config[:clone_retries]
+        last_error = nil
 
-        vm_id, vm_name = allocate_and_clone
-        state[:vm_id] = vm_id
-        state[:vm_name] = vm_name
+        retries.times do |attempt|
+          info("Creating Proxmox VM from template #{config[:template_id]}...")
 
-        configure_hardware(vm_id)
-        start_and_wait_for_ip(state, vm_id)
+          vm_id, vm_name = allocate_and_clone
+          state[:vm_id] = vm_id
+          state[:vm_name] = vm_name
 
-        info("Proxmox VM #{vm_name} (#{vm_id}) created.")
+          begin
+            configure_hardware(vm_id)
+            start_and_wait_for_ip(state, vm_id)
+            info("Proxmox VM #{vm_name} (#{vm_id}) created.")
+            return
+          rescue ApiError => e
+            raise unless e.vmid_race_lost?
+
+            last_error = e
+            warn("VMID #{vm_id} race lost (attempt #{attempt + 1}/#{retries}): #{e.message}")
+            warn("Another process owns VM #{vm_id} — abandoning and retrying...")
+            clear_state(state)
+            sleep backoff_delay(attempt)
+          end
+        end
+
+        raise last_error
       end
 
       def allocate_and_clone

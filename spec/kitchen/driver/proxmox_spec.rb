@@ -290,6 +290,89 @@ RSpec.describe Kitchen::Driver::Proxmox do
         driver.create(state)
       end
     end
+
+    context 'VMID race recovery' do
+      let(:race_error) do
+        Kitchen::Driver::Proxmox::ApiError.new(500, '{"data":null,"message":"VM 113 already running\\n"}')
+      end
+
+      before do
+        allow(driver).to receive(:sleep)
+      end
+
+      it 'retries from scratch when start detects race loss' do
+        call_count = 0
+        allow(api_client).to receive(:next_vm_id) do
+          call_count += 1
+          (112 + call_count).to_s
+        end
+        allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+        allow(api_client).to receive(:wait_for_task)
+        allow(api_client).to receive(:configure_vm)
+
+        start_call_count = 0
+        allow(api_client).to receive(:start_vm) do
+          start_call_count += 1
+          raise race_error if start_call_count == 1
+
+          'UPID:pve:start'
+        end
+
+        state = {}
+        driver.create(state)
+        expect(state[:vm_id]).to eq(114)
+      end
+
+      it 'retries from scratch when configure detects hotplug race' do
+        hotplug_error = Kitchen::Driver::Proxmox::ApiError.new(
+          400, '{"errors":{"net0":"hotplug problem - error on hot-unplugging device \'net0\'\\n"}}'
+        )
+
+        call_count = 0
+        allow(api_client).to receive(:next_vm_id) do
+          call_count += 1
+          (112 + call_count).to_s
+        end
+        allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+        allow(api_client).to receive(:wait_for_task)
+        allow(api_client).to receive(:start_vm).and_return('UPID:pve:start')
+
+        configure_call_count = 0
+        allow(api_client).to receive(:configure_vm) do
+          configure_call_count += 1
+          raise hotplug_error if configure_call_count == 1
+        end
+
+        state = {}
+        driver.create(state)
+        expect(state[:vm_id]).to eq(114)
+      end
+
+      it 'clears state before retrying so destroy does not target wrong VM' do
+        call_count = 0
+        allow(api_client).to receive(:next_vm_id) do
+          call_count += 1
+          (112 + call_count).to_s
+        end
+        allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+        allow(api_client).to receive(:wait_for_task)
+        allow(api_client).to receive(:configure_vm)
+
+        start_call_count = 0
+        allow(api_client).to receive(:start_vm) do
+          start_call_count += 1
+          raise race_error if start_call_count == 1
+
+          'UPID:pve:start'
+        end
+
+        state = {}
+        driver.create(state)
+        # Final state should be the second VM, not the first
+        expect(state[:vm_id]).to eq(114)
+        expect(state[:vm_name]).to match(/kitchen-/)
+      end
+    end
   end
 
   describe '#destroy' do

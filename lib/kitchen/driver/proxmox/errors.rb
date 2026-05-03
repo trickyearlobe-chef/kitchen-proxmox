@@ -22,6 +22,16 @@ module Kitchen
             response_body.match?(/unable to create VM \d+/i) ||
             response_body.match?(/can't lock file.*lock-\d+/i)
         end
+
+        # Returns true when the error indicates another process owns the VM
+        # (lost a VMID race — VM was started or configured by another clone).
+        def vmid_race_lost?
+          return false unless status_code == 400 || status_code == 500
+
+          response_body.match?(/already running/i) ||
+            response_body.match?(/hotplug problem/i) ||
+            response_body.match?(/does not exist/i)
+        end
       end
     end
   end
