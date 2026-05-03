@@ -166,6 +166,15 @@ RSpec.describe Kitchen::Driver::Proxmox::ApiClient do
       expect(result['status']).to eq('stopped')
     end
 
+    it 'raises ApiError when task exits with error' do
+      stopped = json_response({ 'status' => 'stopped', 'exitstatus' => "can't lock file '/var/lock/qemu-server/lock-113.conf' - got timeout" })
+      allow(http).to receive(:request).and_return(stopped)
+
+      upid = 'UPID:pve:00001234:00000000:12345678:qmclone:9000:user@pam:'
+      expect { client.wait_for_task(node: 'pve', upid:, timeout: 10, interval: 0) }
+        .to raise_error(Kitchen::Driver::ProxmoxErrors::ApiError, /can't lock file/)
+    end
+
     it 'raises on timeout' do
       running = json_response({ 'status' => 'running' })
       allow(http).to receive(:request).and_return(running)

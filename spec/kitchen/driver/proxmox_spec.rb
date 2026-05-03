@@ -160,7 +160,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       allow(driver).to receive(:api_client).and_return(api_client)
       allow(api_client).to receive(:next_vm_id).and_return('200')
       allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
-      allow(api_client).to receive(:wait_for_task)
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       allow(api_client).to receive(:configure_vm)
       allow(api_client).to receive(:start_vm)
       allow(api_client).to receive(:agent_network_interfaces).and_return(
@@ -195,7 +195,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       state = {}
       expect(api_client).to receive(:wait_for_task).with(
         hash_including(node: 'pve', upid: 'UPID:pve:clone')
-      )
+      ).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       driver.create(state)
     end
 
@@ -307,7 +307,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
           (112 + call_count).to_s
         end
         allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
-        allow(api_client).to receive(:wait_for_task)
+        allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
         allow(api_client).to receive(:configure_vm)
 
         start_call_count = 0
@@ -334,7 +334,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
           (112 + call_count).to_s
         end
         allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
-        allow(api_client).to receive(:wait_for_task)
+        allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
         allow(api_client).to receive(:start_vm).and_return('UPID:pve:start')
 
         configure_call_count = 0
@@ -355,7 +355,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
           (112 + call_count).to_s
         end
         allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
-        allow(api_client).to receive(:wait_for_task)
+        allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
         allow(api_client).to receive(:configure_vm)
 
         start_call_count = 0
@@ -392,7 +392,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       state = { vm_id: 200, vm_name: 'kitchen-test-abc123', hostname: '10.0.0.5' }
       allow(api_client).to receive(:vm_status).and_return({ 'status' => 'running' })
       allow(api_client).to receive(:stop_vm).and_return('UPID:pve:stop')
-      allow(api_client).to receive(:wait_for_task)
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       expect(api_client).to receive(:destroy_vm).with(node: 'pve', vm_id: 200)
       driver.destroy(state)
     end
@@ -401,7 +401,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       state = { vm_id: 200, vm_name: 'kitchen-test-abc123', hostname: '10.0.0.5' }
       allow(api_client).to receive(:vm_status).and_return({ 'status' => 'running' })
       allow(api_client).to receive(:stop_vm).and_return('UPID:pve:stop')
-      allow(api_client).to receive(:wait_for_task)
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       allow(api_client).to receive(:destroy_vm)
       driver.destroy(state)
       expect(state).not_to have_key(:vm_id)

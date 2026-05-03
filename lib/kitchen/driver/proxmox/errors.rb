@@ -30,7 +30,8 @@ module Kitchen
 
           response_body.match?(/already running/i) ||
             response_body.match?(/hotplug problem/i) ||
-            response_body.match?(/does not exist/i)
+            response_body.match?(/does not exist/i) ||
+            response_body.match?(/can't lock file.*lock-\d+/i)
         end
       end
     end

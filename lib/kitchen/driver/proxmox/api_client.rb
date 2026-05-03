@@ -76,7 +76,14 @@ module Kitchen
           deadline = Time.now + timeout
           loop do
             status = task_status(node:, upid:)
-            return status if status['status'] == 'stopped'
+            if status['status'] == 'stopped'
+              exitstatus = status['exitstatus'].to_s
+              unless exitstatus == 'OK'
+                raise ProxmoxErrors::ApiError.new(500, exitstatus)
+              end
+
+              return status
+            end
             raise "Task timeout after #{timeout}s: #{upid}" if Time.now > deadline
 
             sleep interval
