@@ -91,6 +91,14 @@ RSpec.describe Kitchen::Driver::Proxmox do
     it 'defaults vmid_range_max to 999999' do
       expect(driver[:vmid_range_max]).to eq(999_999)
     end
+
+    it 'defaults node_pool to nil' do
+      expect(driver[:node_pool]).to be_nil
+    end
+
+    it 'defaults connect_timeout to 10' do
+      expect(driver[:connect_timeout]).to eq(10)
+    end
   end
 
   describe 'helpful validation' do
@@ -98,24 +106,6 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     before do
       allow(driver).to receive(:api_client).and_return(api_client)
-    end
-
-    context 'when node is missing' do
-      let(:driver_config) { super().merge(node: nil) }
-
-      it 'lists available nodes and raises Kitchen::UserError' do
-        allow(api_client).to receive(:list_nodes).and_return(
-          [{ 'node' => 'pve1', 'status' => 'online' }, { 'node' => 'pve2', 'status' => 'online' }]
-        )
-        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /node/)
-      end
-
-      it 'includes node names in the error message' do
-        allow(api_client).to receive(:list_nodes).and_return(
-          [{ 'node' => 'pve1', 'status' => 'online' }, { 'node' => 'pve2', 'status' => 'online' }]
-        )
-        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /pve1.*pve2/m)
-      end
     end
 
     context 'when template_id is missing' do
@@ -137,27 +127,117 @@ RSpec.describe Kitchen::Driver::Proxmox do
       end
     end
 
-    context 'when both node and template_id are missing' do
-      let(:driver_config) { super().merge(node: nil, template_id: nil) }
+    context 'when API call fails during validation' do
+      let(:driver_config) { super().merge(template_id: nil) }
 
-      it 'lists both nodes and templates in the error' do
-        allow(api_client).to receive(:list_nodes).and_return(
-          [{ 'node' => 'pve1', 'status' => 'online' }]
-        )
-        allow(api_client).to receive(:list_templates).and_return(
-          [{ 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve1' }]
-        )
-        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /node.*template_id/m)
+      it 'still raises a useful error without the list' do
+        allow(api_client).to receive(:list_templates).and_raise(StandardError, 'connection refused')
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /template_id/)
+      end
+    end
+  end
+
+  describe 'node auto-selection' do
+    let(:api_client) { instance_double(Kitchen::Driver::Proxmox::ApiClient) }
+    let(:driver_config) { super().merge(node: nil) }
+
+    before do
+      allow(driver).to receive(:api_client).and_return(api_client)
+      allow(api_client).to receive(:validate_vmid).and_return('900001')
+      allow(driver).to receive(:rand).and_return(900_001)
+      allow(api_client).to receive(:clone_vm).and_return('UPID:pve1:clone')
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+      allow(api_client).to receive(:configure_vm)
+      allow(api_client).to receive(:start_vm)
+      allow(api_client).to receive(:agent_network_interfaces).and_return(
+        { 'result' => [
+          { 'name' => 'eth0', 'ip-addresses' => [{ 'ip-address' => '10.0.0.5', 'ip-address-type' => 'ipv4' }] }
+        ] }
+      )
+    end
+
+    it 'selects node with least memory allocation ratio' do
+      allow(api_client).to receive(:list_nodes).and_return([
+        { 'node' => 'pve1', 'status' => 'online', 'mem' => 80_000, 'maxmem' => 100_000 },
+        { 'node' => 'pve2', 'status' => 'online', 'mem' => 20_000, 'maxmem' => 100_000 }
+      ])
+      state = {}
+      driver.create(state)
+      expect(state[:node]).to eq('pve2')
+    end
+
+    it 'skips offline nodes' do
+      allow(api_client).to receive(:list_nodes).and_return([
+        { 'node' => 'pve1', 'status' => 'offline', 'mem' => 1000, 'maxmem' => 100_000 },
+        { 'node' => 'pve2', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
+      ])
+      state = {}
+      driver.create(state)
+      expect(state[:node]).to eq('pve2')
+    end
+
+    it 'uses pinned node from config when set' do
+      d = described_class.new(driver_config.merge(node: 'pinned-node'))
+      allow(d).to receive(:instance).and_return(kitchen_instance)
+      allow(d).to receive(:api_client).and_return(api_client)
+      state = {}
+      d.create(state)
+      expect(state[:node]).to eq('pinned-node')
+    end
+
+    it 'uses previously resolved node from state' do
+      allow(api_client).to receive(:list_nodes).and_return([
+        { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
+      ])
+      state = { node: 'already-resolved' }
+      # Should not re-resolve since it's in state. But state[:vm_id] is nil so create runs.
+      # Actually state[:node] presence alone doesn't skip create. Let me adjust:
+      # The driver only skips create if state[:vm_id] is set.
+      # resolve_node should return state[:node] if present.
+      driver.create(state)
+      expect(state[:node]).to eq('already-resolved')
+    end
+
+    context 'with node_pool' do
+      let(:driver_config) { super().merge(node_pool: %w[pve2 pve3]) }
+
+      it 'restricts selection to pooled nodes' do
+        allow(api_client).to receive(:list_nodes).and_return([
+          { 'node' => 'pve1', 'status' => 'online', 'mem' => 1000, 'maxmem' => 100_000 },
+          { 'node' => 'pve2', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 },
+          { 'node' => 'pve3', 'status' => 'online', 'mem' => 30_000, 'maxmem' => 100_000 }
+        ])
+        state = {}
+        driver.create(state)
+        expect(state[:node]).to eq('pve3')
+      end
+
+      it 'raises Kitchen::UserError when all pooled nodes are offline' do
+        allow(api_client).to receive(:list_nodes).and_return([
+          { 'node' => 'pve1', 'status' => 'online', 'mem' => 1000, 'maxmem' => 100_000 },
+          { 'node' => 'pve2', 'status' => 'offline', 'mem' => 0, 'maxmem' => 100_000 },
+          { 'node' => 'pve3', 'status' => 'offline', 'mem' => 0, 'maxmem' => 100_000 }
+        ])
+        state = {}
+        expect { driver.create(state) }.to raise_error(Kitchen::UserError, /no online nodes/i)
       end
     end
 
-    context 'when API call fails during validation' do
-      let(:driver_config) { super().merge(node: nil) }
+    it 'raises Kitchen::UserError when no nodes are online' do
+      allow(api_client).to receive(:list_nodes).and_return([
+        { 'node' => 'pve1', 'status' => 'offline', 'mem' => 0, 'maxmem' => 100_000 }
+      ])
+      state = {}
+      expect { driver.create(state) }.to raise_error(Kitchen::UserError, /no online nodes/i)
+    end
 
-      it 'still raises a useful error without the list' do
-        allow(api_client).to receive(:list_nodes).and_raise(StandardError, 'connection refused')
-        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /node/)
-      end
+    it 'stores the selected node in state for destroy' do
+      allow(api_client).to receive(:list_nodes).and_return([
+        { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
+      ])
+      state = {}
+      driver.create(state)
+      expect(state[:node]).to eq('pve1')
     end
   end
 
@@ -407,6 +487,18 @@ RSpec.describe Kitchen::Driver::Proxmox do
       allow(api_client).to receive(:vm_status).and_raise('connection refused')
       expect(api_client).to receive(:destroy_vm).with(node: 'pve', vm_id: 200)
       driver.destroy(state)
+    end
+
+    it 'uses state[:node] when node was auto-selected' do
+      d = described_class.new(driver_config.merge(node: nil))
+      allow(d).to receive(:instance).and_return(kitchen_instance)
+      allow(d).to receive(:api_client).and_return(api_client)
+      state = { vm_id: 200, vm_name: 'kitchen-test-abc123', hostname: '10.0.0.5', node: 'auto-selected-node' }
+      allow(api_client).to receive(:vm_status).and_return({ 'status' => 'running' })
+      allow(api_client).to receive(:stop_vm).and_return('UPID:auto-selected-node:stop')
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+      expect(api_client).to receive(:destroy_vm).with(node: 'auto-selected-node', vm_id: 200)
+      d.destroy(state)
     end
   end
 end

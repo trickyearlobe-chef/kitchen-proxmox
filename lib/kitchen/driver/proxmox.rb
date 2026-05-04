@@ -23,6 +23,7 @@ module Kitchen
       required_config :proxmox_token_id
       required_config :proxmox_token_secret
       default_config :node, nil
+      default_config :node_pool, nil
       default_config :template_id, nil
 
       default_config :ssl_verify, true
@@ -43,6 +44,7 @@ module Kitchen
       def create(state)
         return if state[:vm_id]
 
+        resolve_node(state)
         validate_config!
         clone_and_start(state)
       end
@@ -51,9 +53,10 @@ module Kitchen
         return unless state[:vm_id]
 
         vm_id = state[:vm_id]
+        node = state[:node] || config[:node]
         info("Destroying Proxmox VM #{state[:vm_name]} (#{vm_id})...")
-        safe_stop_vm(vm_id)
-        api_client.destroy_vm(node: config[:node], vm_id:)
+        safe_stop_vm(node, vm_id)
+        api_client.destroy_vm(node:, vm_id:)
         clear_state(state)
         info("Proxmox VM #{vm_id} destroyed.")
       end
@@ -73,17 +76,18 @@ module Kitchen
       def clone_and_start(state)
         retries = config[:clone_retries]
         last_error = nil
+        node = state[:node]
 
         retries.times do |attempt|
           info("Creating Proxmox VM from template #{config[:template_id]}...")
 
-          vm_id, vm_name = allocate_and_clone
+          vm_id, vm_name = allocate_and_clone(node)
           state[:vm_id] = vm_id
           state[:vm_name] = vm_name
 
           begin
-            configure_hardware(vm_id)
-            start_and_wait_for_ip(state, vm_id)
+            configure_hardware(node, vm_id)
+            start_and_wait_for_ip(state, node, vm_id)
             info("Proxmox VM #{vm_name} (#{vm_id}) created.")
             return
           rescue ApiError => e
@@ -93,6 +97,7 @@ module Kitchen
             warn("VMID #{vm_id} race lost (attempt #{attempt + 1}/#{retries}): #{e.message}")
             warn("Another process owns VM #{vm_id} — abandoning and retrying...")
             clear_state(state)
+            state[:node] = node
             sleep backoff_delay(attempt)
           end
         end
@@ -100,7 +105,7 @@ module Kitchen
         raise last_error
       end
 
-      def allocate_and_clone
+      def allocate_and_clone(node)
         retries = config[:clone_retries]
         last_error = nil
 
@@ -109,7 +114,7 @@ module Kitchen
           vm_name = generate_vm_name(instance.name)
 
           begin
-            clone_template(vm_id, vm_name)
+            clone_template(node, vm_id, vm_name)
             return [vm_id, vm_name]
           rescue ApiError => e
             raise unless e.vmid_conflict?
@@ -137,8 +142,7 @@ module Kitchen
         "#{config[:vm_name_prefix]}#{suite_name}-#{Time.now.to_i}"
       end
 
-      def clone_template(vm_id, vm_name)
-        node = config[:node]
+      def clone_template(node, vm_id, vm_name)
         upid = api_client.clone_vm(
           node:, template_id: config[:template_id],
           new_id: vm_id, name: vm_name,
@@ -147,9 +151,9 @@ module Kitchen
         api_client.wait_for_task(node:, upid:, timeout: config[:clone_timeout])
       end
 
-      def configure_hardware(vm_id)
+      def configure_hardware(node, vm_id)
         api_client.configure_vm(
-          node: config[:node],
+          node:,
           vm_id:,
           cpus: config[:cpus],
           memory: config[:memory],
@@ -157,30 +161,30 @@ module Kitchen
         )
       end
 
-      def start_and_wait_for_ip(state, vm_id)
-        api_client.start_vm(node: config[:node], vm_id:)
-        ip = wait_for_ip(vm_id)
+      def start_and_wait_for_ip(state, node, vm_id)
+        api_client.start_vm(node:, vm_id:)
+        ip = wait_for_ip(node, vm_id)
         state[:hostname] = ip
       end
 
-      def stop_vm(vm_id)
-        status = api_client.vm_status(node: config[:node], vm_id:)
+      def stop_vm(node, vm_id)
+        status = api_client.vm_status(node:, vm_id:)
         return unless status['status'] == 'running'
 
-        upid = api_client.stop_vm(node: config[:node], vm_id:)
-        api_client.wait_for_task(node: config[:node], upid:, timeout: 60)
+        upid = api_client.stop_vm(node:, vm_id:)
+        api_client.wait_for_task(node:, upid:, timeout: 60)
       end
 
-      def safe_stop_vm(vm_id)
-        stop_vm(vm_id)
+      def safe_stop_vm(node, vm_id)
+        stop_vm(node, vm_id)
       rescue ::StandardError => e
         warn("Failed to stop VM #{vm_id}: #{e.message}")
       end
 
-      def wait_for_ip(vm_id)
+      def wait_for_ip(node, vm_id)
         deadline = Time.now + config[:ip_wait_timeout]
         loop do
-          ip = fetch_ip(vm_id)
+          ip = fetch_ip(node, vm_id)
           return ip if ip
           raise "Timed out waiting for IP on VM #{vm_id}" if Time.now > deadline
 
@@ -188,11 +192,8 @@ module Kitchen
         end
       end
 
-      def fetch_ip(vm_id)
-        interfaces = api_client.agent_network_interfaces(
-          node: config[:node],
-          vm_id:
-        )
+      def fetch_ip(node, vm_id)
+        interfaces = api_client.agent_network_interfaces(node:, vm_id:)
         return nil unless interfaces.is_a?(Hash) && interfaces['result']
 
         extract_ipv4_from_interfaces(interfaces['result'])
@@ -213,23 +214,38 @@ module Kitchen
 
       def validate_config!
         errors = []
-        errors << validate_node if config[:node].nil?
         errors << validate_template_id if config[:template_id].nil?
         return if errors.empty?
 
         raise Kitchen::UserError, errors.join("\n\n")
       end
 
-      def validate_node
-        msg = "Missing required config: node\n"
-        begin
-          nodes = api_client.list_nodes
-          msg += "Available Proxmox nodes:\n"
-          nodes.each { |n| msg += "  - #{n['node']} (#{n['status']})\n" }
-        rescue ::StandardError
-          msg += "  (could not retrieve node list from Proxmox API)\n"
+      def resolve_node(state)
+        # Use pinned node from config
+        if config[:node]
+          state[:node] = config[:node]
+          return
         end
-        msg
+
+        # Use previously resolved node from state
+        return if state[:node]
+
+        # Auto-select: query cluster and pick least-loaded online node
+        nodes = api_client.list_nodes
+        candidates = nodes.select { |n| n['status'] == 'online' }
+
+        # Filter by node_pool if set
+        candidates = candidates.select { |n| config[:node_pool].include?(n['node']) } if config[:node_pool]
+
+        if candidates.empty?
+          statuses = nodes.map { |n| "  - #{n['node']} (#{n['status']})" }.join("\n")
+          raise Kitchen::UserError, "No online nodes available. Node statuses:\n#{statuses}"
+        end
+
+        # Select by least memory allocation ratio
+        selected = candidates.min_by { |n| n['mem'].to_f / n['maxmem'] }
+        state[:node] = selected['node']
+        info("Auto-selected node: #{state[:node]}")
       end
 
       def validate_template_id

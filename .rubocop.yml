@@ -21,6 +21,14 @@ Metrics/AbcSize:
     - lib/kitchen/driver/proxmox.rb
     - lib/kitchen/driver/proxmox/api_client.rb
 
+Metrics/CyclomaticComplexity:
+  Exclude:
+    - lib/kitchen/driver/proxmox.rb
+
+Metrics/PerceivedComplexity:
+  Exclude:
+    - lib/kitchen/driver/proxmox.rb
+
 Metrics/ParameterLists:
   Exclude:
     - lib/kitchen/driver/proxmox/api_client.rb
