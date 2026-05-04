@@ -27,6 +27,10 @@ module Kitchen
           get('/api2/json/cluster/nextid')
         end
 
+        def validate_vmid(vm_id)
+          get("/api2/json/cluster/nextid?vmid=#{vm_id}")
+        end
+
         def clone_vm(node:, template_id:, new_id:, **options)
           full = options.fetch(:full, true)
           body = { newid: new_id, full: full ? 1 : 0, target: node }

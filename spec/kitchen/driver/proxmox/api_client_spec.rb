@@ -74,6 +74,19 @@ RSpec.describe Kitchen::Driver::Proxmox::ApiClient do
     end
   end
 
+  describe '#validate_vmid' do
+    it 'returns the validated VMID when it is available' do
+      allow(http).to receive(:request).and_return(json_response('900001'))
+      expect(client.validate_vmid(900_001)).to eq('900001')
+    end
+
+    it 'raises ApiError when the VMID is already taken' do
+      allow(http).to receive(:request).and_return(error_response('400', 'VM 900001 already exists'))
+      expect { client.validate_vmid(900_001) }
+        .to raise_error(Kitchen::Driver::ProxmoxErrors::ApiError)
+    end
+  end
+
   describe '#clone_vm' do
     it 'posts a clone request and returns the UPID' do
       upid = 'UPID:pve:00001234:00000000:12345678:qmclone:9000:user@pam:'
@@ -167,7 +180,8 @@ RSpec.describe Kitchen::Driver::Proxmox::ApiClient do
     end
 
     it 'raises ApiError when task exits with error' do
-      stopped = json_response({ 'status' => 'stopped', 'exitstatus' => "can't lock file '/var/lock/qemu-server/lock-113.conf' - got timeout" })
+      stopped = json_response({ 'status' => 'stopped',
+                                'exitstatus' => "can't lock file '/var/lock/qemu-server/lock-113.conf' - got timeout" })
       allow(http).to receive(:request).and_return(stopped)
 
       upid = 'UPID:pve:00001234:00000000:12345678:qmclone:9000:user@pam:'

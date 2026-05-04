@@ -36,6 +36,8 @@ module Kitchen
       default_config :start_timeout, 300
       default_config :ip_wait_timeout, 120
       default_config :clone_retries, 5
+      default_config :vmid_range_min, 900_000
+      default_config :vmid_range_max, 999_999
 
       def create(state)
         return if state[:vm_id]
@@ -124,7 +126,9 @@ module Kitchen
       end
 
       def allocate_vm_id
-        Integer(api_client.next_vm_id)
+        vm_id = rand(config[:vmid_range_min]..config[:vmid_range_max])
+        api_client.validate_vmid(vm_id)
+        vm_id
       end
 
       def generate_vm_name(suite_name)
