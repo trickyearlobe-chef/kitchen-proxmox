@@ -255,24 +255,37 @@ module Kitchen
       def detect_clone_strategy(state)
         template_id = state[:template_id] || config[:template_id]
         template_node = state[:template_node] || state[:node]
-        shared = template_on_shared_storage?(template_node, template_id)
+        storage_info = template_storage_info(template_node, template_id)
+        shared = storage_info && storage_info['shared'] == 1
+        supports_linked = shared && linked_clone_capable_type?(storage_info['type'])
 
-        if shared
+        if supports_linked
           state[:full_clone] = false
+        elsif shared
+          # Shared but doesn't support linked clones (e.g. plain LVM)
+          state[:full_clone] = true
+          warn("Storage '#{storage_info['storage']}' (type: #{storage_info['type']}) does not support linked clones. " \
+               'Using full clone. For faster clones, use lvmthin, ZFS, Ceph RBD, or file-based storage (NFS/dir).')
         else
+          # Local storage — full clone and pin to template node
           state[:full_clone] = true
           pin_to_template_node(state, template_node)
         end
       end
 
-      def template_on_shared_storage?(template_node, template_id)
+      LINKED_CLONE_STORAGE_TYPES = %w[lvmthin nfs dir cephfs rbd zfspool btrfs].freeze
+
+      def linked_clone_capable_type?(type)
+        LINKED_CLONE_STORAGE_TYPES.include?(type.to_s)
+      end
+
+      def template_storage_info(template_node, template_id)
         vm_conf = api_client.vm_config(node: template_node, vm_id: template_id)
         storage_name = extract_storage_name(vm_conf)
-        return false unless storage_name
+        return nil unless storage_name
 
         storages = api_client.list_storage(node: template_node)
-        storage_info = storages.find { |s| s['storage'] == storage_name }
-        storage_info && storage_info['shared'] == 1
+        storages.find { |s| s['storage'] == storage_name }
       end
 
       def extract_storage_name(vm_conf)

@@ -171,14 +171,17 @@ RSpec.describe Kitchen::Driver::Proxmox do
         ] }
       )
       allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
-      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }])
+      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1,
+                                                                'type' => 'lvm' }])
     end
 
     it 'resolves template_name to its VMID via list_templates' do
       allow(api_client).to receive(:list_templates).and_return([
-        { 'vmid' => 117, 'name' => 'alma10-template', 'node' => 'pve', 'template' => 1 },
-        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve', 'template' => 1 }
-      ])
+                                                                 { 'vmid' => 117, 'name' => 'alma10-template',
+                                                                   'node' => 'pve', 'template' => 1 },
+                                                                 { 'vmid' => 9000, 'name' => 'ubuntu-2204',
+                                                                   'node' => 'pve', 'template' => 1 }
+                                                               ])
       state = {}
       driver.create(state)
       expect(state[:template_id]).to eq(117)
@@ -186,9 +189,11 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'prefers template on the target node when multiple matches' do
       allow(api_client).to receive(:list_templates).and_return([
-        { 'vmid' => 200, 'name' => 'alma10-template', 'node' => 'other-node', 'template' => 1 },
-        { 'vmid' => 117, 'name' => 'alma10-template', 'node' => 'pve', 'template' => 1 }
-      ])
+                                                                 { 'vmid' => 200, 'name' => 'alma10-template',
+                                                                   'node' => 'other-node', 'template' => 1 },
+                                                                 { 'vmid' => 117, 'name' => 'alma10-template',
+                                                                   'node' => 'pve', 'template' => 1 }
+                                                               ])
       state = {}
       driver.create(state)
       expect(state[:template_id]).to eq(117)
@@ -196,9 +201,11 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'uses first match when none is on the target node' do
       allow(api_client).to receive(:list_templates).and_return([
-        { 'vmid' => 200, 'name' => 'alma10-template', 'node' => 'node-a', 'template' => 1 },
-        { 'vmid' => 201, 'name' => 'alma10-template', 'node' => 'node-b', 'template' => 1 }
-      ])
+                                                                 { 'vmid' => 200, 'name' => 'alma10-template',
+                                                                   'node' => 'node-a', 'template' => 1 },
+                                                                 { 'vmid' => 201, 'name' => 'alma10-template',
+                                                                   'node' => 'node-b', 'template' => 1 }
+                                                               ])
       state = {}
       driver.create(state)
       expect(state[:template_id]).to eq(200)
@@ -206,16 +213,18 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'raises Kitchen::UserError when template_name not found' do
       allow(api_client).to receive(:list_templates).and_return([
-        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve', 'template' => 1 }
-      ])
+                                                                 { 'vmid' => 9000, 'name' => 'ubuntu-2204',
+                                                                   'node' => 'pve', 'template' => 1 }
+                                                               ])
       state = {}
       expect { driver.create(state) }.to raise_error(Kitchen::UserError, /alma10-template.*not found/i)
     end
 
     it 'includes available templates in the not-found error' do
       allow(api_client).to receive(:list_templates).and_return([
-        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve', 'template' => 1 }
-      ])
+                                                                 { 'vmid' => 9000, 'name' => 'ubuntu-2204',
+                                                                   'node' => 'pve', 'template' => 1 }
+                                                               ])
       state = {}
       expect { driver.create(state) }.to raise_error(Kitchen::UserError, /9000.*ubuntu-2204/m)
     end
@@ -248,14 +257,29 @@ RSpec.describe Kitchen::Driver::Proxmox do
     end
 
     context 'when clone_type is auto' do
-      it 'uses linked clone when template is on shared storage' do
-        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
+      it 'uses linked clone when template is on shared storage that supports linked clones' do
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'ceph-pool:base-117-disk-0,size=32G' })
         allow(api_client).to receive(:list_storage).and_return([
-          { 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }
-        ])
+                                                                 { 'storage' => 'ceph-pool', 'shared' => 1,
+                                                                   'type' => 'rbd' }
+                                                               ])
         state = {}
         expect(api_client).to receive(:clone_vm).with(hash_including(full: false))
         driver.create(state)
+      end
+
+      it 'uses full clone (no pinning) when storage is shared but does not support linked clones' do
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
+        allow(api_client).to receive(:list_storage).and_return([
+                                                                 { 'storage' => 'SharedLVM', 'shared' => 1,
+                                                                   'type' => 'lvm' }
+                                                               ])
+        state = {}
+        expect(api_client).to receive(:clone_vm).with(hash_including(full: true))
+        expect(driver).to receive(:warn).with(/SharedLVM.*does not support linked clones.*full clone.*lvmthin/)
+        driver.create(state)
+        # Should NOT pin to template node — storage is shared, just can't do linked
+        expect(state[:node]).to eq('pve')
       end
 
       it 'uses full clone and pins to template node when template is on local storage' do
@@ -263,17 +287,19 @@ RSpec.describe Kitchen::Driver::Proxmox do
         allow(d).to receive(:instance).and_return(kitchen_instance)
         allow(d).to receive(:api_client).and_return(api_client)
         allow(api_client).to receive(:list_nodes).and_return([
-          { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 },
-          { 'node' => 'pve2', 'status' => 'online', 'mem' => 20_000, 'maxmem' => 100_000 }
-        ])
+                                                               { 'node' => 'pve1', 'status' => 'online',
+                                                                 'mem' => 50_000, 'maxmem' => 100_000 },
+                                                               { 'node' => 'pve2', 'status' => 'online',
+                                                                 'mem' => 20_000, 'maxmem' => 100_000 }
+                                                             ])
         allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'local-lvm:base-117-disk-0,size=32G' })
         allow(api_client).to receive(:list_storage).and_return([
-          { 'storage' => 'local-lvm', 'shared' => 0, 'type' => 'lvmthin' }
-        ])
+                                                                 { 'storage' => 'local-lvm', 'shared' => 0,
+                                                                   'type' => 'lvmthin' }
+                                                               ])
         state = {}
         expect(api_client).to receive(:clone_vm).with(hash_including(full: true))
         d.create(state)
-        # Should pin to template node (um890 is template_node from state)
       end
 
       it 'warns when pinning to template node due to local storage' do
@@ -281,12 +307,14 @@ RSpec.describe Kitchen::Driver::Proxmox do
         allow(d).to receive(:instance).and_return(kitchen_instance)
         allow(d).to receive(:api_client).and_return(api_client)
         allow(api_client).to receive(:list_nodes).and_return([
-          { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
-        ])
+                                                               { 'node' => 'pve1', 'status' => 'online',
+                                                                 'mem' => 50_000, 'maxmem' => 100_000 }
+                                                             ])
         allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'local-lvm:base-117-disk-0,size=32G' })
         allow(api_client).to receive(:list_storage).and_return([
-          { 'storage' => 'local-lvm', 'shared' => 0, 'type' => 'lvmthin' }
-        ])
+                                                                 { 'storage' => 'local-lvm', 'shared' => 0,
+                                                                   'type' => 'lvmthin' }
+                                                               ])
         state = { template_node: 'template-host' }
         expect(d).to receive(:warn).with(/local storage.*template-host/i)
         allow(d).to receive(:info)
@@ -301,8 +329,9 @@ RSpec.describe Kitchen::Driver::Proxmox do
       it 'always passes full: false' do
         allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
         allow(api_client).to receive(:list_storage).and_return([
-          { 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }
-        ])
+                                                                 { 'storage' => 'SharedLVM', 'shared' => 1,
+                                                                   'type' => 'lvm' }
+                                                               ])
         state = {}
         expect(api_client).to receive(:clone_vm).with(hash_including(full: false))
         driver.create(state)
@@ -315,8 +344,9 @@ RSpec.describe Kitchen::Driver::Proxmox do
       it 'always passes full: true' do
         allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
         allow(api_client).to receive(:list_storage).and_return([
-          { 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }
-        ])
+                                                                 { 'storage' => 'SharedLVM', 'shared' => 1,
+                                                                   'type' => 'lvm' }
+                                                               ])
         state = {}
         expect(api_client).to receive(:clone_vm).with(hash_including(full: true))
         driver.create(state)
@@ -342,14 +372,17 @@ RSpec.describe Kitchen::Driver::Proxmox do
         ] }
       )
       allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-9000-disk-0,size=32G' })
-      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }])
+      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1,
+                                                                'type' => 'lvm' }])
     end
 
     it 'selects node with least memory allocation ratio' do
       allow(api_client).to receive(:list_nodes).and_return([
-        { 'node' => 'pve1', 'status' => 'online', 'mem' => 80_000, 'maxmem' => 100_000 },
-        { 'node' => 'pve2', 'status' => 'online', 'mem' => 20_000, 'maxmem' => 100_000 }
-      ])
+                                                             { 'node' => 'pve1', 'status' => 'online', 'mem' => 80_000,
+                                                               'maxmem' => 100_000 },
+                                                             { 'node' => 'pve2', 'status' => 'online', 'mem' => 20_000,
+                                                               'maxmem' => 100_000 }
+                                                           ])
       state = {}
       driver.create(state)
       expect(state[:node]).to eq('pve2')
@@ -357,9 +390,11 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'skips offline nodes' do
       allow(api_client).to receive(:list_nodes).and_return([
-        { 'node' => 'pve1', 'status' => 'offline', 'mem' => 1000, 'maxmem' => 100_000 },
-        { 'node' => 'pve2', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
-      ])
+                                                             { 'node' => 'pve1', 'status' => 'offline', 'mem' => 1000,
+                                                               'maxmem' => 100_000 },
+                                                             { 'node' => 'pve2', 'status' => 'online', 'mem' => 50_000,
+                                                               'maxmem' => 100_000 }
+                                                           ])
       state = {}
       driver.create(state)
       expect(state[:node]).to eq('pve2')
@@ -376,8 +411,9 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'uses previously resolved node from state' do
       allow(api_client).to receive(:list_nodes).and_return([
-        { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
-      ])
+                                                             { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000,
+                                                               'maxmem' => 100_000 }
+                                                           ])
       state = { node: 'already-resolved' }
       # Should not re-resolve since it's in state. But state[:vm_id] is nil so create runs.
       # Actually state[:node] presence alone doesn't skip create. Let me adjust:
@@ -392,10 +428,13 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
       it 'restricts selection to pooled nodes' do
         allow(api_client).to receive(:list_nodes).and_return([
-          { 'node' => 'pve1', 'status' => 'online', 'mem' => 1000, 'maxmem' => 100_000 },
-          { 'node' => 'pve2', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 },
-          { 'node' => 'pve3', 'status' => 'online', 'mem' => 30_000, 'maxmem' => 100_000 }
-        ])
+                                                               { 'node' => 'pve1', 'status' => 'online', 'mem' => 1000,
+                                                                 'maxmem' => 100_000 },
+                                                               { 'node' => 'pve2', 'status' => 'online',
+                                                                 'mem' => 50_000, 'maxmem' => 100_000 },
+                                                               { 'node' => 'pve3', 'status' => 'online',
+                                                                 'mem' => 30_000, 'maxmem' => 100_000 }
+                                                             ])
         state = {}
         driver.create(state)
         expect(state[:node]).to eq('pve3')
@@ -403,10 +442,13 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
       it 'raises Kitchen::UserError when all pooled nodes are offline' do
         allow(api_client).to receive(:list_nodes).and_return([
-          { 'node' => 'pve1', 'status' => 'online', 'mem' => 1000, 'maxmem' => 100_000 },
-          { 'node' => 'pve2', 'status' => 'offline', 'mem' => 0, 'maxmem' => 100_000 },
-          { 'node' => 'pve3', 'status' => 'offline', 'mem' => 0, 'maxmem' => 100_000 }
-        ])
+                                                               { 'node' => 'pve1', 'status' => 'online', 'mem' => 1000,
+                                                                 'maxmem' => 100_000 },
+                                                               { 'node' => 'pve2', 'status' => 'offline', 'mem' => 0,
+                                                                 'maxmem' => 100_000 },
+                                                               { 'node' => 'pve3', 'status' => 'offline', 'mem' => 0,
+                                                                 'maxmem' => 100_000 }
+                                                             ])
         state = {}
         expect { driver.create(state) }.to raise_error(Kitchen::UserError, /no online nodes/i)
       end
@@ -414,16 +456,18 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'raises Kitchen::UserError when no nodes are online' do
       allow(api_client).to receive(:list_nodes).and_return([
-        { 'node' => 'pve1', 'status' => 'offline', 'mem' => 0, 'maxmem' => 100_000 }
-      ])
+                                                             { 'node' => 'pve1', 'status' => 'offline', 'mem' => 0,
+                                                               'maxmem' => 100_000 }
+                                                           ])
       state = {}
       expect { driver.create(state) }.to raise_error(Kitchen::UserError, /no online nodes/i)
     end
 
     it 'stores the selected node in state for destroy' do
       allow(api_client).to receive(:list_nodes).and_return([
-        { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
-      ])
+                                                             { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000,
+                                                               'maxmem' => 100_000 }
+                                                           ])
       state = {}
       driver.create(state)
       expect(state[:node]).to eq('pve1')
@@ -448,7 +492,8 @@ RSpec.describe Kitchen::Driver::Proxmox do
         ] }
       )
       allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-9000-disk-0,size=32G' })
-      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }])
+      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1,
+                                                                'type' => 'lvm' }])
     end
 
     it 'skips if vm_id already present in state' do
