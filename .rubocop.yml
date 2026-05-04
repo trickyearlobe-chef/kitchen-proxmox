@@ -31,6 +31,7 @@ Metrics/PerceivedComplexity:
 
 Metrics/ParameterLists:
   Exclude:
+    - lib/kitchen/driver/proxmox.rb
     - lib/kitchen/driver/proxmox/api_client.rb
 
 Lint/NonLocalExitFromIterator:

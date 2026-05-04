@@ -104,6 +104,43 @@ Template VMIDs are opaque numbers that differ across clusters. Users prefer to r
 1. Multi-URL failover is established first (ApiClient layer).
 2. Node selection happens next (uses the working API connection).
 3. Template resolution happens last (needs the selected node for affinity).
+4. Clone strategy is determined after template resolution (needs to inspect template storage).
+
+## Feature 4: Smart Clone Strategy
+
+### Problem
+
+Full clones copy the entire disk and take minutes. Linked clones are near-instant (CoW overlay) but require the template disk to be accessible from the target node. When a template is on local storage, cross-node clones fail.
+
+### Behaviour
+
+- After resolving the template, the driver inspects the template's disk storage.
+- Storage type detection: parse the VM config disk field (e.g. `SharedLVM:vm-117-disk-0` → storage name `SharedLVM`), then query storage info to check the `shared` flag.
+- Clone strategy based on storage type:
+  - **Shared storage**: linked clone (`full: 0`), target the auto-selected node. Fast path.
+  - **Local storage**: full clone (`full: 1`), pin target to the template's node. Emit a **warning** that node auto-selection is constrained because the template uses local storage.
+- A new config `clone_type` overrides auto-detection: `auto` (default), `linked`, or `full`.
+  - `linked`: always linked clone. Raises `Kitchen::UserError` if template is on local storage and target node differs (Proxmox would reject it anyway).
+  - `full`: always full clone. Works everywhere but slow.
+  - `auto`: the behaviour described above.
+
+### Config
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `clone_type` | String | `auto` | Clone strategy: `auto`, `linked`, or `full` |
+
+### API Endpoints Used
+
+- `GET /api2/json/nodes/{node}/qemu/{vmid}/config` — template disk field (e.g. `scsi0: SharedLVM:base-117-disk-0,...`)
+- `GET /api2/json/nodes/{node}/storage` — returns `[{storage, shared, type, ...}]`
+
+### Node Pinning on Local Storage
+
+When `clone_type` is `auto` and the template is on local storage:
+- Override the auto-selected node with the template's node.
+- Warn: "Template uses local storage on node 'X' — pinning clone target to 'X'. Move template to shared storage for cross-node flexibility."
+- The VM still gets created successfully, just constrained to one node.
 
 ## Backward Compatibility
 

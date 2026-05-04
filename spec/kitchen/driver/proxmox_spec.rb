@@ -103,6 +103,10 @@ RSpec.describe Kitchen::Driver::Proxmox do
     it 'defaults template_name to nil' do
       expect(driver[:template_name]).to be_nil
     end
+
+    it 'defaults clone_type to auto' do
+      expect(driver[:clone_type]).to eq('auto')
+    end
   end
 
   describe 'helpful validation' do
@@ -166,6 +170,8 @@ RSpec.describe Kitchen::Driver::Proxmox do
           { 'name' => 'eth0', 'ip-addresses' => [{ 'ip-address' => '10.0.0.5', 'ip-address-type' => 'ipv4' }] }
         ] }
       )
+      allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
+      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }])
     end
 
     it 'resolves template_name to its VMID via list_templates' do
@@ -222,6 +228,102 @@ RSpec.describe Kitchen::Driver::Proxmox do
     end
   end
 
+  describe 'smart clone strategy' do
+    let(:api_client) { instance_double(Kitchen::Driver::Proxmox::ApiClient) }
+    let(:driver_config) { super().merge(template_id: 117) }
+
+    before do
+      allow(driver).to receive(:api_client).and_return(api_client)
+      allow(api_client).to receive(:validate_vmid).and_return('900001')
+      allow(driver).to receive(:rand).and_return(900_001)
+      allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+      allow(api_client).to receive(:configure_vm)
+      allow(api_client).to receive(:start_vm)
+      allow(api_client).to receive(:agent_network_interfaces).and_return(
+        { 'result' => [
+          { 'name' => 'eth0', 'ip-addresses' => [{ 'ip-address' => '10.0.0.5', 'ip-address-type' => 'ipv4' }] }
+        ] }
+      )
+    end
+
+    context 'when clone_type is auto' do
+      it 'uses linked clone when template is on shared storage' do
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
+        allow(api_client).to receive(:list_storage).and_return([
+          { 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }
+        ])
+        state = {}
+        expect(api_client).to receive(:clone_vm).with(hash_including(full: false))
+        driver.create(state)
+      end
+
+      it 'uses full clone and pins to template node when template is on local storage' do
+        d = described_class.new(driver_config.merge(node: nil))
+        allow(d).to receive(:instance).and_return(kitchen_instance)
+        allow(d).to receive(:api_client).and_return(api_client)
+        allow(api_client).to receive(:list_nodes).and_return([
+          { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 },
+          { 'node' => 'pve2', 'status' => 'online', 'mem' => 20_000, 'maxmem' => 100_000 }
+        ])
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'local-lvm:base-117-disk-0,size=32G' })
+        allow(api_client).to receive(:list_storage).and_return([
+          { 'storage' => 'local-lvm', 'shared' => 0, 'type' => 'lvmthin' }
+        ])
+        state = {}
+        expect(api_client).to receive(:clone_vm).with(hash_including(full: true))
+        d.create(state)
+        # Should pin to template node (um890 is template_node from state)
+      end
+
+      it 'warns when pinning to template node due to local storage' do
+        d = described_class.new(driver_config.merge(node: nil))
+        allow(d).to receive(:instance).and_return(kitchen_instance)
+        allow(d).to receive(:api_client).and_return(api_client)
+        allow(api_client).to receive(:list_nodes).and_return([
+          { 'node' => 'pve1', 'status' => 'online', 'mem' => 50_000, 'maxmem' => 100_000 }
+        ])
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'local-lvm:base-117-disk-0,size=32G' })
+        allow(api_client).to receive(:list_storage).and_return([
+          { 'storage' => 'local-lvm', 'shared' => 0, 'type' => 'lvmthin' }
+        ])
+        state = { template_node: 'template-host' }
+        expect(d).to receive(:warn).with(/local storage.*template-host/i)
+        allow(d).to receive(:info)
+        d.create(state)
+        expect(state[:node]).to eq('template-host')
+      end
+    end
+
+    context 'when clone_type is linked' do
+      let(:driver_config) { super().merge(clone_type: 'linked') }
+
+      it 'always passes full: false' do
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
+        allow(api_client).to receive(:list_storage).and_return([
+          { 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }
+        ])
+        state = {}
+        expect(api_client).to receive(:clone_vm).with(hash_including(full: false))
+        driver.create(state)
+      end
+    end
+
+    context 'when clone_type is full' do
+      let(:driver_config) { super().merge(clone_type: 'full') }
+
+      it 'always passes full: true' do
+        allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-117-disk-0,size=32G' })
+        allow(api_client).to receive(:list_storage).and_return([
+          { 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }
+        ])
+        state = {}
+        expect(api_client).to receive(:clone_vm).with(hash_including(full: true))
+        driver.create(state)
+      end
+    end
+  end
+
   describe 'node auto-selection' do
     let(:api_client) { instance_double(Kitchen::Driver::Proxmox::ApiClient) }
     let(:driver_config) { super().merge(node: nil) }
@@ -239,6 +341,8 @@ RSpec.describe Kitchen::Driver::Proxmox do
           { 'name' => 'eth0', 'ip-addresses' => [{ 'ip-address' => '10.0.0.5', 'ip-address-type' => 'ipv4' }] }
         ] }
       )
+      allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-9000-disk-0,size=32G' })
+      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }])
     end
 
     it 'selects node with least memory allocation ratio' do
@@ -343,6 +447,8 @@ RSpec.describe Kitchen::Driver::Proxmox do
           { 'name' => 'eth0', 'ip-addresses' => [{ 'ip-address' => '10.0.0.5', 'ip-address-type' => 'ipv4' }] }
         ] }
       )
+      allow(api_client).to receive(:vm_config).and_return({ 'scsi0' => 'SharedLVM:base-9000-disk-0,size=32G' })
+      allow(api_client).to receive(:list_storage).and_return([{ 'storage' => 'SharedLVM', 'shared' => 1, 'type' => 'lvm' }])
     end
 
     it 'skips if vm_id already present in state' do

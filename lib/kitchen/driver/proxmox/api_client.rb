@@ -131,6 +131,10 @@ module Kitchen
           resources.select { |r| r['template'] == 1 }
         end
 
+        def list_storage(node:)
+          get("/api2/json/nodes/#{node}/storage")
+        end
+
         private
 
         def get(path)

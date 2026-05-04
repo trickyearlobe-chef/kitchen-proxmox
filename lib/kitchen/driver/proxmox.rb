@@ -26,6 +26,7 @@ module Kitchen
       default_config :node_pool, nil
       default_config :template_id, nil
       default_config :template_name, nil
+      default_config :clone_type, 'auto'
 
       default_config :ssl_verify, true
       default_config :connect_timeout, 10
@@ -48,6 +49,7 @@ module Kitchen
         resolve_node(state)
         resolve_template(state)
         validate_config!
+        resolve_clone_strategy(state)
         clone_and_start(state)
       end
 
@@ -81,11 +83,12 @@ module Kitchen
         node = state[:node]
         template_id = state[:template_id] || config[:template_id]
         template_node = state[:template_node] || node
+        full_clone = state[:full_clone]
 
         retries.times do |attempt|
           info("Creating Proxmox VM from template #{template_id}...")
 
-          vm_id, vm_name = allocate_and_clone(node, template_id, template_node)
+          vm_id, vm_name = allocate_and_clone(node, template_id, template_node, full_clone)
           state[:vm_id] = vm_id
           state[:vm_name] = vm_name
 
@@ -109,7 +112,7 @@ module Kitchen
         raise last_error
       end
 
-      def allocate_and_clone(node, template_id, template_node)
+      def allocate_and_clone(node, template_id, template_node, full_clone)
         retries = config[:clone_retries]
         last_error = nil
 
@@ -118,7 +121,7 @@ module Kitchen
           vm_name = generate_vm_name(instance.name)
 
           begin
-            clone_template(node, vm_id, vm_name, template_id, template_node)
+            clone_template(node, vm_id, vm_name, template_id, template_node, full_clone)
             return [vm_id, vm_name]
           rescue ApiError => e
             raise unless e.vmid_conflict?
@@ -146,11 +149,11 @@ module Kitchen
         "#{config[:vm_name_prefix]}#{suite_name}-#{Time.now.to_i}"
       end
 
-      def clone_template(target_node, vm_id, vm_name, template_id, template_node)
+      def clone_template(target_node, vm_id, vm_name, template_id, template_node, full_clone)
         upid = api_client.clone_vm(
           node: template_node, template_id:,
           new_id: vm_id, name: vm_name,
-          target: target_node,
+          target: target_node, full: full_clone,
           pool: config[:pool], storage: config[:storage]
         )
         api_client.wait_for_task(node: template_node, upid:, timeout: config[:clone_timeout])
@@ -230,6 +233,66 @@ module Kitchen
           end
         end
         nil
+      end
+
+      def resolve_clone_strategy(state)
+        return if state[:full_clone] != nil # rubocop:disable Style/NonNilCheck
+
+        # Can't determine strategy without a template
+        template_id = state[:template_id] || config[:template_id]
+        return unless template_id
+
+        case config[:clone_type]
+        when 'full'
+          state[:full_clone] = true
+        when 'linked'
+          state[:full_clone] = false
+        else
+          detect_clone_strategy(state)
+        end
+      end
+
+      def detect_clone_strategy(state)
+        template_id = state[:template_id] || config[:template_id]
+        template_node = state[:template_node] || state[:node]
+        shared = template_on_shared_storage?(template_node, template_id)
+
+        if shared
+          state[:full_clone] = false
+        else
+          state[:full_clone] = true
+          pin_to_template_node(state, template_node)
+        end
+      end
+
+      def template_on_shared_storage?(template_node, template_id)
+        vm_conf = api_client.vm_config(node: template_node, vm_id: template_id)
+        storage_name = extract_storage_name(vm_conf)
+        return false unless storage_name
+
+        storages = api_client.list_storage(node: template_node)
+        storage_info = storages.find { |s| s['storage'] == storage_name }
+        storage_info && storage_info['shared'] == 1
+      end
+
+      def extract_storage_name(vm_conf)
+        # Find the first real disk field (scsi0, virtio0, ide0, sata0, etc.)
+        disk_field = vm_conf.find do |k, v|
+          k.match?(/^(scsi|virtio|ide|sata)\d+$/) && !v.start_with?('none')
+        end
+        return nil unless disk_field
+
+        # Format: "StorageName:disk-name,option=val,..."
+        disk_field[1].split(':').first
+      end
+
+      def pin_to_template_node(state, template_node)
+        return if state[:node] == template_node
+
+        warn("Template uses local storage on node '#{template_node}' — " \
+             "pinning clone target to '#{template_node}'. " \
+             'Move template to shared storage for cross-node flexibility.')
+        state[:node] = template_node
       end
 
       def validate_config!
