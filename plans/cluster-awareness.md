@@ -19,11 +19,11 @@ Implement three features from `specifications/cluster-awareness.md`:
 
 1. Write specs for `ApiClient` failover behaviour in `spec/kitchen/driver/proxmox/api_client_spec.rb`
 2. Add `connect_timeout` param to `ApiClient#initialize`
-3. Accept `base_urls` (Array) in addition to `base_url` (String) — normalize internally to array
+3. Accept `base_urls` (Array) in `ApiClient#initialize` — normalize `String | Array` to array
 4. Implement connection-error retry across URLs with sticky preference
-5. Add new config keys to driver: `proxmox_urls`, `connect_timeout`
-6. Update driver's `api_client` method to pass the URL list
-7. Make `proxmox_url` not strictly required when `proxmox_urls` is present
+5. Add `connect_timeout` config to driver
+6. Update driver's `api_client` method to normalize `config[:proxmox_url]` (String or Array) via `Array()` and pass as `base_urls`
+7. Remove `required_config :proxmox_url` validation (Kitchen's built-in check doesn't understand Array — validate manually)
 
 ### Phase 2: Automatic Node Selection
 
@@ -64,6 +64,7 @@ Implement three features from `specifications/cluster-awareness.md`:
 - `chef exec rspec` passes with all new and existing specs green
 - `chef exec rubocop` passes
 - Single-URL + pinned-node + template_id configs still work (backward compat)
+- `proxmox_url` accepts a String or Array in `.kitchen.yml`
 - Multi-URL config fails over when first URL is unreachable
 - Omitting `node` triggers auto-selection by memory
 - `node_pool` restricts selection to listed nodes

@@ -38,21 +38,34 @@ Each Proxmox node runs its own API server. If the single configured URL's node g
 
 ### Behaviour
 
-- A new config `proxmox_urls` (Array of Strings) provides multiple API endpoints.
-- The existing `proxmox_url` (String) continues to work for single-URL setups.
-- If both are set, `proxmox_urls` takes precedence. If only `proxmox_url` is set, it's treated as a one-element array internally.
+- `proxmox_url` accepts a String (single URL) or an Array of Strings (multiple URLs). The driver normalizes to an array internally via `Array(config[:proxmox_url])`.
 - On each API call, the client tries URLs in order. If a connection fails (timeout, refused, DNS error), it tries the next URL. Non-connection HTTP errors (4xx, 5xx) are NOT retried on a different URL — those indicate a real API problem.
 - Connection timeout per URL: 10 seconds (configurable via `connect_timeout`).
-- Once a working URL is found, it becomes the "preferred" URL for subsequent calls in that session (sticky). If it later fails, failover resumes from the list.
+- Once a working URL is found, it becomes the "preferred" URL for subsequent calls in that session (sticky). If it later fails, failover resumes from the full list.
 - All URLs must point to the same Proxmox cluster (same auth credentials work on all).
 
 ### Config
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `proxmox_urls` | Array | `nil` | Ordered list of Proxmox API base URLs |
-| `proxmox_url` | String | (required if `proxmox_urls` not set) | Single API URL (existing) |
+| `proxmox_url` | String or Array | (required) | One or more Proxmox API base URLs |
 | `connect_timeout` | Integer | `10` | Per-URL connection timeout in seconds |
+
+### Kitchen YAML Examples
+
+Single node:
+```yaml
+driver:
+  proxmox_url: https://pve1.example.com:8006
+```
+
+Multiple nodes (failover):
+```yaml
+driver:
+  proxmox_url:
+    - https://pve1.example.com:8006
+    - https://pve2.example.com:8006
+```
 
 ### Error Semantics
 
@@ -95,5 +108,6 @@ Template VMIDs are opaque numbers that differ across clusters. Users prefer to r
 ## Backward Compatibility
 
 - All new configs are optional with nil defaults.
-- Existing configs (`proxmox_url`, `node`, `template_id`) continue to work unchanged.
-- A `.kitchen.yml` with only the existing fields is fully valid.
+- `proxmox_url` continues to accept a plain String — existing configs work unchanged.
+- Existing configs (`proxmox_url`, `node`, `template_id`) remain fully valid.
+- A `.kitchen.yml` with only the existing fields requires no changes.
