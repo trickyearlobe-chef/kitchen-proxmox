@@ -26,6 +26,7 @@ module Kitchen
       default_config :template_id, nil
 
       default_config :ssl_verify, true
+      default_config :connect_timeout, 10
       default_config :pool, nil
       default_config :vm_name_prefix, 'kitchen-'
       default_config :cpus, 1
@@ -61,10 +62,11 @@ module Kitchen
 
       def api_client
         @api_client ||= ApiClient.new(
-          base_url: config[:proxmox_url],
+          base_urls: Array(config[:proxmox_url]).map(&:to_s),
           token_id: config[:proxmox_token_id],
           token_secret: config[:proxmox_token_secret],
-          ssl_verify: config[:ssl_verify]
+          ssl_verify: config[:ssl_verify],
+          connect_timeout: config[:connect_timeout]
         )
       end
 

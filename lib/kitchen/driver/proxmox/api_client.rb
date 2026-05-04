@@ -13,14 +13,39 @@ module Kitchen
       # HTTP client for the Proxmox VE REST API.
       # Authenticates via API tokens. Provides convenience
       # methods for VM lifecycle operations.
+      #
+      # Supports multiple API URLs for failover. On connection
+      # errors the client tries the next URL. Once a URL works
+      # it becomes the sticky preference for subsequent calls.
       class ApiClient
-        attr_reader :base_url, :token_id, :token_secret, :ssl_verify
+        CONNECTION_ERRORS = [
+          Errno::ECONNREFUSED,
+          Errno::ECONNRESET,
+          Errno::ETIMEDOUT,
+          Errno::EHOSTUNREACH,
+          Net::OpenTimeout,
+          Net::ReadTimeout,
+          SocketError,
+          OpenSSL::SSL::SSLError
+        ].freeze
 
-        def initialize(base_url:, token_id:, token_secret:, ssl_verify: true)
-          @base_url = base_url.chomp('/')
+        attr_reader :base_urls, :token_id, :token_secret, :ssl_verify, :connect_timeout
+
+        # Accepts either base_url (String) or base_urls (Array).
+        # The String form is normalized to a one-element array.
+        def initialize(token_id:, token_secret:, base_url: nil, base_urls: nil, ssl_verify: true, connect_timeout: 10)
+          urls = base_urls || Array(base_url)
+          @base_urls = urls.map { |u| u.chomp('/') }
           @token_id = token_id
           @token_secret = token_secret
           @ssl_verify = ssl_verify
+          @connect_timeout = connect_timeout
+          @preferred_url_index = nil
+        end
+
+        # Backward-compat reader: returns the first (or preferred) URL.
+        def base_url
+          @base_urls[@preferred_url_index || 0]
         end
 
         def next_vm_id
@@ -82,9 +107,7 @@ module Kitchen
             status = task_status(node:, upid:)
             if status['status'] == 'stopped'
               exitstatus = status['exitstatus'].to_s
-              unless exitstatus == 'OK'
-                raise ProxmoxErrors::ApiError.new(500, exitstatus)
-              end
+              raise ProxmoxErrors::ApiError.new(500, exitstatus) unless exitstatus == 'OK'
 
               return status
             end
@@ -122,32 +145,65 @@ module Kitchen
         end
 
         def delete(path, params = {})
-          uri = URI.parse("#{base_url}#{path}")
-          uri.query = URI.encode_www_form(params) unless params.empty?
-          http = build_http(uri)
-          req = Net::HTTP::Delete.new(uri.request_uri)
-          apply_headers(req)
-          handle_response(http.request(req))
+          with_failover do |url|
+            uri = URI.parse("#{url}#{path}")
+            uri.query = URI.encode_www_form(params) unless params.empty?
+            http = build_http(uri)
+            req = Net::HTTP::Delete.new(uri.request_uri)
+            apply_headers(req)
+            handle_response(http.request(req))
+          end
         end
 
         def request(method_class, path, body = nil)
-          uri = URI.parse("#{base_url}#{path}")
-          http = build_http(uri)
-          req = method_class.new(uri.request_uri)
-          apply_headers(req)
+          with_failover do |url|
+            uri = URI.parse("#{url}#{path}")
+            http = build_http(uri)
+            req = method_class.new(uri.request_uri)
+            apply_headers(req)
 
-          if body && !body.empty? && req.respond_to?(:body=)
-            req['Content-Type'] = 'application/x-www-form-urlencoded'
-            req.body = URI.encode_www_form(body)
+            if body && !body.empty? && req.respond_to?(:body=)
+              req['Content-Type'] = 'application/x-www-form-urlencoded'
+              req.body = URI.encode_www_form(body)
+            end
+
+            handle_response(http.request(req))
+          end
+        end
+
+        # Tries the preferred URL first, then all others in order.
+        # On connection errors, advances to the next URL.
+        # On success, sets the working URL as preferred.
+        def with_failover
+          urls_to_try = failover_order
+          failures = []
+
+          urls_to_try.each_with_index do |url, idx|
+            return yield(url).tap { @preferred_url_index = @base_urls.index(url) }
+          rescue *CONNECTION_ERRORS => e
+            failures << [url, e]
+            # Reset preference if the preferred URL just failed
+            @preferred_url_index = nil if idx.zero? && @preferred_url_index
           end
 
-          handle_response(http.request(req))
+          msg = "All Proxmox API URLs failed:\n"
+          failures.each { |url, err| msg += "  #{url}: #{err.class} - #{err.message}\n" }
+          raise ProxmoxErrors::ApiError.new(0, msg)
+        end
+
+        # Returns URLs ordered with preferred first, then the rest.
+        def failover_order
+          return @base_urls unless @preferred_url_index
+
+          preferred = @base_urls[@preferred_url_index]
+          [preferred] + @base_urls.reject { |u| u == preferred }
         end
 
         def build_http(uri)
           http = Net::HTTP.new(uri.host, uri.port)
           http.use_ssl = (uri.scheme == 'https')
           http.verify_mode = ssl_verify ? OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE
+          http.open_timeout = @connect_timeout
           http
         end
 

@@ -14,3 +14,17 @@ Metrics/ClassLength:
 Metrics/MethodLength:
   Exclude:
     - lib/kitchen/driver/proxmox.rb
+    - lib/kitchen/driver/proxmox/api_client.rb
+
+Metrics/AbcSize:
+  Exclude:
+    - lib/kitchen/driver/proxmox.rb
+    - lib/kitchen/driver/proxmox/api_client.rb
+
+Metrics/ParameterLists:
+  Exclude:
+    - lib/kitchen/driver/proxmox/api_client.rb
+
+Lint/NonLocalExitFromIterator:
+  Exclude:
+    - lib/kitchen/driver/proxmox.rb

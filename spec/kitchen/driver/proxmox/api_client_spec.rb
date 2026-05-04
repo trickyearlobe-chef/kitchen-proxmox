@@ -26,6 +26,7 @@ RSpec.describe Kitchen::Driver::Proxmox::ApiClient do
     allow(Net::HTTP).to receive(:new).and_return(http)
     allow(http).to receive(:use_ssl=)
     allow(http).to receive(:verify_mode=)
+    allow(http).to receive(:open_timeout=)
   end
 
   def json_response(data, code = '200')
@@ -260,6 +261,154 @@ RSpec.describe Kitchen::Driver::Proxmox::ApiClient do
       allow(http).to receive(:request).and_return(error_response('401',
                                                                  '{"errors":{"username":"invalid credentials"}}'))
       expect { client.next_vm_id }.to raise_error(/Proxmox API error 401/)
+    end
+  end
+
+  describe 'multi-URL failover' do
+    let(:url1) { 'https://pve1.example.com:8006' }
+    let(:url2) { 'https://pve2.example.com:8006' }
+    let(:url3) { 'https://pve3.example.com:8006' }
+
+    let(:multi_client) do
+      described_class.new(
+        base_urls: [url1, url2, url3],
+        token_id:,
+        token_secret:,
+        ssl_verify: false,
+        connect_timeout: 5
+      )
+    end
+
+    let(:http1) { instance_double(Net::HTTP) }
+    let(:http2) { instance_double(Net::HTTP) }
+    let(:http3) { instance_double(Net::HTTP) }
+
+    before do
+      allow(Net::HTTP).to receive(:new).with('pve1.example.com', 8006).and_return(http1)
+      allow(Net::HTTP).to receive(:new).with('pve2.example.com', 8006).and_return(http2)
+      allow(Net::HTTP).to receive(:new).with('pve3.example.com', 8006).and_return(http3)
+      [http1, http2, http3].each do |h|
+        allow(h).to receive(:use_ssl=)
+        allow(h).to receive(:verify_mode=)
+        allow(h).to receive(:open_timeout=)
+      end
+    end
+
+    describe '#initialize with base_urls' do
+      it 'accepts an array of URLs' do
+        expect(multi_client.base_urls).to eq([url1, url2, url3])
+      end
+
+      it 'normalizes a single base_url string to a one-element array' do
+        c = described_class.new(base_url: url1, token_id:, token_secret:)
+        expect(c.base_urls).to eq([url1])
+      end
+
+      it 'strips trailing slashes from all URLs' do
+        c = described_class.new(
+          base_urls: ["#{url1}/", "#{url2}/"],
+          token_id:,
+          token_secret:
+        )
+        expect(c.base_urls).to eq([url1, url2])
+      end
+
+      it 'stores connect_timeout' do
+        expect(multi_client.connect_timeout).to eq(5)
+      end
+
+      it 'defaults connect_timeout to 10' do
+        c = described_class.new(base_url: url1, token_id:, token_secret:)
+        expect(c.connect_timeout).to eq(10)
+      end
+    end
+
+    describe 'connection failover' do
+      it 'uses the first URL when it works' do
+        allow(http1).to receive(:request).and_return(json_response('100'))
+        expect(multi_client.next_vm_id).to eq('100')
+      end
+
+      it 'falls over to second URL when first refuses connection' do
+        allow(http1).to receive(:request).and_raise(Errno::ECONNREFUSED)
+        allow(http2).to receive(:request).and_return(json_response('100'))
+        expect(multi_client.next_vm_id).to eq('100')
+      end
+
+      it 'falls over to third URL when first two time out' do
+        allow(http1).to receive(:request).and_raise(Net::OpenTimeout)
+        allow(http2).to receive(:request).and_raise(Errno::ETIMEDOUT)
+        allow(http3).to receive(:request).and_return(json_response('100'))
+        expect(multi_client.next_vm_id).to eq('100')
+      end
+
+      it 'falls over on SocketError (DNS failure)' do
+        allow(http1).to receive(:request).and_raise(SocketError, 'getaddrinfo: Name does not resolve')
+        allow(http2).to receive(:request).and_return(json_response('100'))
+        expect(multi_client.next_vm_id).to eq('100')
+      end
+
+      it 'falls over on OpenSSL::SSL::SSLError' do
+        allow(http1).to receive(:request).and_raise(OpenSSL::SSL::SSLError, 'SSL_connect returned=1')
+        allow(http2).to receive(:request).and_return(json_response('100'))
+        expect(multi_client.next_vm_id).to eq('100')
+      end
+
+      it 'does NOT fail over on HTTP 4xx/5xx errors' do
+        allow(http1).to receive(:request).and_return(error_response('401', 'unauthorized'))
+        expect { multi_client.next_vm_id }
+          .to raise_error(Kitchen::Driver::ProxmoxErrors::ApiError, /401/)
+      end
+
+      it 'raises with all failures when every URL is unreachable' do
+        allow(http1).to receive(:request).and_raise(Errno::ECONNREFUSED)
+        allow(http2).to receive(:request).and_raise(Net::OpenTimeout)
+        allow(http3).to receive(:request).and_raise(SocketError, 'Name does not resolve')
+        expect { multi_client.next_vm_id }
+          .to raise_error(Kitchen::Driver::ProxmoxErrors::ApiError, /All Proxmox API URLs failed/)
+      end
+
+      it 'includes each URL and its error in the all-failed message' do
+        allow(http1).to receive(:request).and_raise(Errno::ECONNREFUSED)
+        allow(http2).to receive(:request).and_raise(Net::OpenTimeout)
+        allow(http3).to receive(:request).and_raise(SocketError, 'Name does not resolve')
+        expect { multi_client.next_vm_id }
+          .to raise_error(Kitchen::Driver::ProxmoxErrors::ApiError, /pve1.*pve2.*pve3/m)
+      end
+    end
+
+    describe 'sticky preference' do
+      it 'reuses the last working URL on subsequent calls' do
+        # First call: url1 fails, url2 works
+        allow(http1).to receive(:request).and_raise(Errno::ECONNREFUSED)
+        allow(http2).to receive(:request).and_return(json_response('100'))
+        multi_client.next_vm_id
+
+        # Second call: should go straight to url2
+        expect(http1).not_to receive(:request)
+        allow(http2).to receive(:request).and_return(json_response('101'))
+        expect(multi_client.next_vm_id).to eq('101')
+      end
+
+      it 'resets sticky preference when the preferred URL fails' do
+        # First call: url1 fails, url2 works → sticky to url2
+        allow(http1).to receive(:request).and_raise(Errno::ECONNREFUSED).once
+        allow(http2).to receive(:request).and_return(json_response('100')).once
+        multi_client.next_vm_id
+
+        # Second call: url2 now fails, should try all from start
+        allow(http1).to receive(:request).and_return(json_response('101'))
+        allow(http2).to receive(:request).and_raise(Errno::ECONNREFUSED)
+        expect(multi_client.next_vm_id).to eq('101')
+      end
+    end
+
+    describe 'connect_timeout' do
+      it 'sets open_timeout on the HTTP connection' do
+        expect(http1).to receive(:open_timeout=).with(5)
+        allow(http1).to receive(:request).and_return(json_response('100'))
+        multi_client.next_vm_id
+      end
     end
   end
 end
