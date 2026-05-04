@@ -33,6 +33,12 @@ module Kitchen
             response_body.match?(/does not exist/i) ||
             response_body.match?(/can't lock file.*lock-\d+/i)
         end
+
+        # Returns true when clone fails because the template uses local storage
+        # and cannot be cloned to a different node.
+        def local_storage_conflict?
+          response_body.match?(/uses local storage/i)
+        end
       end
     end
   end

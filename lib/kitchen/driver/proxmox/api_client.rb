@@ -58,7 +58,8 @@ module Kitchen
 
         def clone_vm(node:, template_id:, new_id:, **options)
           full = options.fetch(:full, true)
-          body = { newid: new_id, full: full ? 1 : 0, target: node }
+          target = options.fetch(:target, node)
+          body = { newid: new_id, full: full ? 1 : 0, target: }
           body[:name] = options[:name] if options[:name]
           body[:pool] = options[:pool] if options[:pool]
           body[:storage] = options[:storage] if options[:storage]

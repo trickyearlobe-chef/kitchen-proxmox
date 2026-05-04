@@ -80,11 +80,12 @@ module Kitchen
         last_error = nil
         node = state[:node]
         template_id = state[:template_id] || config[:template_id]
+        template_node = state[:template_node] || node
 
         retries.times do |attempt|
           info("Creating Proxmox VM from template #{template_id}...")
 
-          vm_id, vm_name = allocate_and_clone(node, template_id)
+          vm_id, vm_name = allocate_and_clone(node, template_id, template_node)
           state[:vm_id] = vm_id
           state[:vm_name] = vm_name
 
@@ -108,7 +109,7 @@ module Kitchen
         raise last_error
       end
 
-      def allocate_and_clone(node, template_id)
+      def allocate_and_clone(node, template_id, template_node)
         retries = config[:clone_retries]
         last_error = nil
 
@@ -117,7 +118,7 @@ module Kitchen
           vm_name = generate_vm_name(instance.name)
 
           begin
-            clone_template(node, vm_id, vm_name, template_id)
+            clone_template(node, vm_id, vm_name, template_id, template_node)
             return [vm_id, vm_name]
           rescue ApiError => e
             raise unless e.vmid_conflict?
@@ -145,13 +146,29 @@ module Kitchen
         "#{config[:vm_name_prefix]}#{suite_name}-#{Time.now.to_i}"
       end
 
-      def clone_template(node, vm_id, vm_name, template_id)
+      def clone_template(target_node, vm_id, vm_name, template_id, template_node)
         upid = api_client.clone_vm(
-          node:, template_id:,
+          node: template_node, template_id:,
           new_id: vm_id, name: vm_name,
+          target: target_node,
           pool: config[:pool], storage: config[:storage]
         )
-        api_client.wait_for_task(node:, upid:, timeout: config[:clone_timeout])
+        api_client.wait_for_task(node: template_node, upid:, timeout: config[:clone_timeout])
+      rescue ApiError => e
+        raise local_storage_error(template_id, template_node, target_node) if e.local_storage_conflict?
+
+        raise
+      end
+
+      def local_storage_error(template_id, template_node, target_node)
+        Kitchen::UserError.new(
+          "Cannot clone template #{template_id} from node '#{template_node}' to node '#{target_node}' " \
+          "because the template uses local storage.\n\n" \
+          "To fix this, either:\n" \
+          "  - Move the template disk to shared storage (e.g. NFS, Ceph, iSCSI)\n" \
+          "  - Pin the node to '#{template_node}' in .kitchen.yml: node: #{template_node}\n" \
+          "  - Create a copy of the template on '#{target_node}'"
+        )
       end
 
       def configure_hardware(node, vm_id)
@@ -249,7 +266,9 @@ module Kitchen
         node = state[:node]
         selected = matches.find { |t| t['node'] == node } || matches.first
         state[:template_id] = selected['vmid']
-        info("Resolved template '#{config[:template_name]}' to VMID #{state[:template_id]}")
+        state[:template_node] = selected['node']
+        info("Resolved template '#{config[:template_name]}' to VMID #{state[:template_id]} " \
+             "on node #{state[:template_node]}")
       end
 
       def resolve_node(state)
