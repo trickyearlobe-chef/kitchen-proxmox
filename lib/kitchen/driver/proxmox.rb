@@ -25,6 +25,7 @@ module Kitchen
       default_config :node, nil
       default_config :node_pool, nil
       default_config :template_id, nil
+      default_config :template_name, nil
 
       default_config :ssl_verify, true
       default_config :connect_timeout, 10
@@ -45,6 +46,7 @@ module Kitchen
         return if state[:vm_id]
 
         resolve_node(state)
+        resolve_template(state)
         validate_config!
         clone_and_start(state)
       end
@@ -77,11 +79,12 @@ module Kitchen
         retries = config[:clone_retries]
         last_error = nil
         node = state[:node]
+        template_id = state[:template_id] || config[:template_id]
 
         retries.times do |attempt|
-          info("Creating Proxmox VM from template #{config[:template_id]}...")
+          info("Creating Proxmox VM from template #{template_id}...")
 
-          vm_id, vm_name = allocate_and_clone(node)
+          vm_id, vm_name = allocate_and_clone(node, template_id)
           state[:vm_id] = vm_id
           state[:vm_name] = vm_name
 
@@ -105,7 +108,7 @@ module Kitchen
         raise last_error
       end
 
-      def allocate_and_clone(node)
+      def allocate_and_clone(node, template_id)
         retries = config[:clone_retries]
         last_error = nil
 
@@ -114,7 +117,7 @@ module Kitchen
           vm_name = generate_vm_name(instance.name)
 
           begin
-            clone_template(node, vm_id, vm_name)
+            clone_template(node, vm_id, vm_name, template_id)
             return [vm_id, vm_name]
           rescue ApiError => e
             raise unless e.vmid_conflict?
@@ -142,9 +145,9 @@ module Kitchen
         "#{config[:vm_name_prefix]}#{suite_name}-#{Time.now.to_i}"
       end
 
-      def clone_template(node, vm_id, vm_name)
+      def clone_template(node, vm_id, vm_name, template_id)
         upid = api_client.clone_vm(
-          node:, template_id: config[:template_id],
+          node:, template_id:,
           new_id: vm_id, name: vm_name,
           pool: config[:pool], storage: config[:storage]
         )
@@ -214,10 +217,39 @@ module Kitchen
 
       def validate_config!
         errors = []
-        errors << validate_template_id if config[:template_id].nil?
+        errors << 'Set template_id OR template_name, not both.' if config[:template_id] && config[:template_name]
+        errors << validate_template_id if config[:template_id].nil? && config[:template_name].nil?
         return if errors.empty?
 
         raise Kitchen::UserError, errors.join("\n\n")
+      end
+
+      def resolve_template(state)
+        # Already resolved (e.g. from a previous create attempt)
+        return if state[:template_id]
+
+        # If template_id is set in config, use it directly
+        if config[:template_id]
+          state[:template_id] = config[:template_id]
+          return
+        end
+
+        # Resolve template_name to VMID
+        return unless config[:template_name]
+
+        templates = api_client.list_templates
+        matches = templates.select { |t| t['name'] == config[:template_name] }
+
+        if matches.empty?
+          msg = "Template '#{config[:template_name]}' not found.\n#{format_template_list_from(templates)}"
+          raise Kitchen::UserError, msg
+        end
+
+        # Prefer template on the target node
+        node = state[:node]
+        selected = matches.find { |t| t['node'] == node } || matches.first
+        state[:template_id] = selected['vmid']
+        info("Resolved template '#{config[:template_name]}' to VMID #{state[:template_id]}")
       end
 
       def resolve_node(state)
@@ -249,19 +281,23 @@ module Kitchen
       end
 
       def validate_template_id
-        msg = "Missing required config: template_id\n"
+        msg = "Missing required config: template_id or template_name\n"
         msg + format_template_list
       end
 
       def format_template_list
         templates = api_client.list_templates
+        format_template_list_from(templates)
+      rescue ::StandardError
+        "  (could not retrieve template list from Proxmox API)\n"
+      end
+
+      def format_template_list_from(templates)
         return "  No templates found on the Proxmox cluster.\n" if templates.empty?
 
         lines = "Available templates:\n"
         templates.each { |t| lines += "  - #{t['vmid']}: #{t['name']} (node: #{t['node']})\n" }
         lines
-      rescue ::StandardError
-        "  (could not retrieve template list from Proxmox API)\n"
       end
 
       def clear_state(state)

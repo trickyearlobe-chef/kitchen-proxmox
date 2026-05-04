@@ -99,6 +99,10 @@ RSpec.describe Kitchen::Driver::Proxmox do
     it 'defaults connect_timeout to 10' do
       expect(driver[:connect_timeout]).to eq(10)
     end
+
+    it 'defaults template_name to nil' do
+      expect(driver[:template_name]).to be_nil
+    end
   end
 
   describe 'helpful validation' do
@@ -108,7 +112,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       allow(driver).to receive(:api_client).and_return(api_client)
     end
 
-    context 'when template_id is missing' do
+    context 'when template_id is missing and template_name is not set' do
       let(:driver_config) { super().merge(template_id: nil) }
 
       it 'lists available templates and raises Kitchen::UserError' do
@@ -127,6 +131,14 @@ RSpec.describe Kitchen::Driver::Proxmox do
       end
     end
 
+    context 'when both template_id and template_name are set' do
+      let(:driver_config) { super().merge(template_id: 9000, template_name: 'ubuntu-2204') }
+
+      it 'raises Kitchen::UserError about mutual exclusivity' do
+        expect { driver.create({}) }.to raise_error(Kitchen::UserError, /template_id.*template_name/m)
+      end
+    end
+
     context 'when API call fails during validation' do
       let(:driver_config) { super().merge(template_id: nil) }
 
@@ -134,6 +146,79 @@ RSpec.describe Kitchen::Driver::Proxmox do
         allow(api_client).to receive(:list_templates).and_raise(StandardError, 'connection refused')
         expect { driver.create({}) }.to raise_error(Kitchen::UserError, /template_id/)
       end
+    end
+  end
+
+  describe 'template lookup by name' do
+    let(:api_client) { instance_double(Kitchen::Driver::Proxmox::ApiClient) }
+    let(:driver_config) { super().merge(template_id: nil, template_name: 'alma10-template') }
+
+    before do
+      allow(driver).to receive(:api_client).and_return(api_client)
+      allow(api_client).to receive(:validate_vmid).and_return('900001')
+      allow(driver).to receive(:rand).and_return(900_001)
+      allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+      allow(api_client).to receive(:configure_vm)
+      allow(api_client).to receive(:start_vm)
+      allow(api_client).to receive(:agent_network_interfaces).and_return(
+        { 'result' => [
+          { 'name' => 'eth0', 'ip-addresses' => [{ 'ip-address' => '10.0.0.5', 'ip-address-type' => 'ipv4' }] }
+        ] }
+      )
+    end
+
+    it 'resolves template_name to its VMID via list_templates' do
+      allow(api_client).to receive(:list_templates).and_return([
+        { 'vmid' => 117, 'name' => 'alma10-template', 'node' => 'pve', 'template' => 1 },
+        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve', 'template' => 1 }
+      ])
+      state = {}
+      driver.create(state)
+      expect(state[:template_id]).to eq(117)
+    end
+
+    it 'prefers template on the target node when multiple matches' do
+      allow(api_client).to receive(:list_templates).and_return([
+        { 'vmid' => 200, 'name' => 'alma10-template', 'node' => 'other-node', 'template' => 1 },
+        { 'vmid' => 117, 'name' => 'alma10-template', 'node' => 'pve', 'template' => 1 }
+      ])
+      state = {}
+      driver.create(state)
+      expect(state[:template_id]).to eq(117)
+    end
+
+    it 'uses first match when none is on the target node' do
+      allow(api_client).to receive(:list_templates).and_return([
+        { 'vmid' => 200, 'name' => 'alma10-template', 'node' => 'node-a', 'template' => 1 },
+        { 'vmid' => 201, 'name' => 'alma10-template', 'node' => 'node-b', 'template' => 1 }
+      ])
+      state = {}
+      driver.create(state)
+      expect(state[:template_id]).to eq(200)
+    end
+
+    it 'raises Kitchen::UserError when template_name not found' do
+      allow(api_client).to receive(:list_templates).and_return([
+        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve', 'template' => 1 }
+      ])
+      state = {}
+      expect { driver.create(state) }.to raise_error(Kitchen::UserError, /alma10-template.*not found/i)
+    end
+
+    it 'includes available templates in the not-found error' do
+      allow(api_client).to receive(:list_templates).and_return([
+        { 'vmid' => 9000, 'name' => 'ubuntu-2204', 'node' => 'pve', 'template' => 1 }
+      ])
+      state = {}
+      expect { driver.create(state) }.to raise_error(Kitchen::UserError, /9000.*ubuntu-2204/m)
+    end
+
+    it 'uses previously resolved template_id from state' do
+      # If state already has template_id, don't re-resolve
+      state = { template_id: 555 }
+      driver.create(state)
+      expect(state[:template_id]).to eq(555)
     end
   end
 
