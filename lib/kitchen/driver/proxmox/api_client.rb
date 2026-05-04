@@ -27,6 +27,10 @@ module Kitchen
           get('/api2/json/cluster/nextid')
         end
 
+        def validate_vmid(vm_id)
+          get("/api2/json/cluster/nextid?vmid=#{vm_id}")
+        end
+
         def clone_vm(node:, template_id:, new_id:, **options)
           full = options.fetch(:full, true)
           body = { newid: new_id, full: full ? 1 : 0, target: node }
@@ -76,7 +80,14 @@ module Kitchen
           deadline = Time.now + timeout
           loop do
             status = task_status(node:, upid:)
-            return status if status['status'] == 'stopped'
+            if status['status'] == 'stopped'
+              exitstatus = status['exitstatus'].to_s
+              unless exitstatus == 'OK'
+                raise ProxmoxErrors::ApiError.new(500, exitstatus)
+              end
+
+              return status
+            end
             raise "Task timeout after #{timeout}s: #{upid}" if Time.now > deadline
 
             sleep interval

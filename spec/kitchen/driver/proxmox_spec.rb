@@ -83,6 +83,14 @@ RSpec.describe Kitchen::Driver::Proxmox do
     it 'defaults storage to nil' do
       expect(driver[:storage]).to be_nil
     end
+
+    it 'defaults vmid_range_min to 900000' do
+      expect(driver[:vmid_range_min]).to eq(900_000)
+    end
+
+    it 'defaults vmid_range_max to 999999' do
+      expect(driver[:vmid_range_max]).to eq(999_999)
+    end
   end
 
   describe 'helpful validation' do
@@ -158,9 +166,10 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     before do
       allow(driver).to receive(:api_client).and_return(api_client)
-      allow(api_client).to receive(:next_vm_id).and_return('200')
+      allow(api_client).to receive(:validate_vmid).and_return('900001')
+      allow(driver).to receive(:rand).and_return(900_001)
       allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
-      allow(api_client).to receive(:wait_for_task)
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       allow(api_client).to receive(:configure_vm)
       allow(api_client).to receive(:start_vm)
       allow(api_client).to receive(:agent_network_interfaces).and_return(
@@ -173,20 +182,20 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     it 'skips if vm_id already present in state' do
       state = { vm_id: 100 }
-      expect(api_client).not_to receive(:next_vm_id)
+      expect(api_client).not_to receive(:validate_vmid)
       driver.create(state)
     end
 
     it 'allocates a VM ID' do
       state = {}
       driver.create(state)
-      expect(state[:vm_id]).to eq(200)
+      expect(state[:vm_id]).to eq(900_001)
     end
 
     it 'clones the template' do
       state = {}
       expect(api_client).to receive(:clone_vm).with(
-        hash_including(node: 'pve', template_id: 9000, new_id: 200)
+        hash_including(node: 'pve', template_id: 9000, new_id: 900_001)
       )
       driver.create(state)
     end
@@ -195,21 +204,21 @@ RSpec.describe Kitchen::Driver::Proxmox do
       state = {}
       expect(api_client).to receive(:wait_for_task).with(
         hash_including(node: 'pve', upid: 'UPID:pve:clone')
-      )
+      ).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       driver.create(state)
     end
 
     it 'configures hardware' do
       state = {}
       expect(api_client).to receive(:configure_vm).with(
-        hash_including(node: 'pve', vm_id: 200, cpus: 1, memory: 1024, network_bridge: 'vmbr0')
+        hash_including(node: 'pve', vm_id: 900_001, cpus: 1, memory: 1024, network_bridge: 'vmbr0')
       )
       driver.create(state)
     end
 
     it 'starts the VM' do
       state = {}
-      expect(api_client).to receive(:start_vm).with(node: 'pve', vm_id: 200)
+      expect(api_client).to receive(:start_vm).with(node: 'pve', vm_id: 900_001)
       driver.create(state)
     end
 
@@ -227,40 +236,38 @@ RSpec.describe Kitchen::Driver::Proxmox do
 
     context 'VMID conflict retry' do
       let(:conflict_error) do
-        Kitchen::Driver::Proxmox::ApiError.new(400, '{"errors":{"newid":"VM 113 already exists"}}')
+        Kitchen::Driver::Proxmox::ApiError.new(400, '{"errors":{"newid":"VM 900001 already exists"}}')
       end
 
       before do
         allow(driver).to receive(:sleep)
+        allow(driver).to receive(:rand).with(900_000..999_999).and_return(900_001, 900_002, 900_003, 900_004, 900_005)
+        allow(driver).to receive(:rand).with(0.0..1.0).and_return(0.5)
       end
 
       it 'retries with a new VMID on conflict' do
-        call_count = 0
-        allow(api_client).to receive(:next_vm_id) do
-          call_count += 1
-          (112 + call_count).to_s
-        end
+        allow(api_client).to receive(:validate_vmid)
         allow(api_client).to receive(:clone_vm) do |**args|
-          raise conflict_error if args[:new_id] == 113
+          raise conflict_error if args[:new_id] == 900_001
 
           'UPID:pve:clone'
         end
 
         state = {}
         driver.create(state)
-        expect(state[:vm_id]).to eq(114)
+        expect(state[:vm_id]).to eq(900_002)
       end
 
       it 'persists vm_id immediately after successful clone' do
         allow(api_client).to receive(:configure_vm).and_raise('hardware config failed')
         state = {}
         expect { driver.create(state) }.to raise_error(/hardware config failed/)
-        expect(state[:vm_id]).to eq(200)
+        expect(state[:vm_id]).to eq(900_001)
       end
 
       it 'raises after exhausting retries' do
         allow(api_client).to receive(:clone_vm).and_raise(conflict_error)
-        allow(api_client).to receive(:next_vm_id).and_return('113')
+        allow(api_client).to receive(:validate_vmid).and_return('900001')
         state = {}
         expect { driver.create(state) }.to raise_error(Kitchen::Driver::Proxmox::ApiError, /already exists/)
       end
@@ -269,18 +276,14 @@ RSpec.describe Kitchen::Driver::Proxmox do
         auth_error = Kitchen::Driver::Proxmox::ApiError.new(401, 'unauthorized')
         allow(api_client).to receive(:clone_vm).and_raise(auth_error)
         state = {}
-        expect(api_client).to receive(:next_vm_id).once
+        expect(api_client).to receive(:validate_vmid).once
         expect { driver.create(state) }.to raise_error(Kitchen::Driver::Proxmox::ApiError, /unauthorized/)
       end
 
       it 'uses exponential backoff with jitter between retries' do
-        call_count = 0
-        allow(api_client).to receive(:next_vm_id) do
-          call_count += 1
-          (112 + call_count).to_s
-        end
+        allow(api_client).to receive(:validate_vmid)
         allow(api_client).to receive(:clone_vm) do |**args|
-          raise conflict_error if args[:new_id] < 115
+          raise conflict_error if args[:new_id] < 900_003
 
           'UPID:pve:clone'
         end
@@ -288,6 +291,79 @@ RSpec.describe Kitchen::Driver::Proxmox do
         state = {}
         expect(driver).to receive(:sleep).at_least(:twice)
         driver.create(state)
+      end
+    end
+
+    context 'VMID race recovery' do
+      let(:race_error) do
+        Kitchen::Driver::Proxmox::ApiError.new(500, '{"data":null,"message":"VM 900001 already running\\n"}')
+      end
+
+      before do
+        allow(driver).to receive(:sleep)
+        allow(driver).to receive(:rand).with(900_000..999_999).and_return(900_001, 900_002, 900_003, 900_004, 900_005)
+        allow(driver).to receive(:rand).with(0.0..1.0).and_return(0.5)
+      end
+
+      it 'retries from scratch when start detects race loss' do
+        allow(api_client).to receive(:validate_vmid)
+        allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+        allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+        allow(api_client).to receive(:configure_vm)
+
+        start_call_count = 0
+        allow(api_client).to receive(:start_vm) do
+          start_call_count += 1
+          raise race_error if start_call_count == 1
+
+          'UPID:pve:start'
+        end
+
+        state = {}
+        driver.create(state)
+        expect(state[:vm_id]).to eq(900_002)
+      end
+
+      it 'retries from scratch when configure detects hotplug race' do
+        hotplug_error = Kitchen::Driver::Proxmox::ApiError.new(
+          400, '{"errors":{"net0":"hotplug problem - error on hot-unplugging device \'net0\'\\n"}}'
+        )
+
+        allow(api_client).to receive(:validate_vmid)
+        allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+        allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+        allow(api_client).to receive(:start_vm).and_return('UPID:pve:start')
+
+        configure_call_count = 0
+        allow(api_client).to receive(:configure_vm) do
+          configure_call_count += 1
+          raise hotplug_error if configure_call_count == 1
+        end
+
+        state = {}
+        driver.create(state)
+        expect(state[:vm_id]).to eq(900_002)
+      end
+
+      it 'clears state before retrying so destroy does not target wrong VM' do
+        allow(api_client).to receive(:validate_vmid)
+        allow(api_client).to receive(:clone_vm).and_return('UPID:pve:clone')
+        allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
+        allow(api_client).to receive(:configure_vm)
+
+        start_call_count = 0
+        allow(api_client).to receive(:start_vm) do
+          start_call_count += 1
+          raise race_error if start_call_count == 1
+
+          'UPID:pve:start'
+        end
+
+        state = {}
+        driver.create(state)
+        # Final state should be the second VM, not the first
+        expect(state[:vm_id]).to eq(900_002)
+        expect(state[:vm_name]).to match(/kitchen-/)
       end
     end
   end
@@ -309,7 +385,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       state = { vm_id: 200, vm_name: 'kitchen-test-abc123', hostname: '10.0.0.5' }
       allow(api_client).to receive(:vm_status).and_return({ 'status' => 'running' })
       allow(api_client).to receive(:stop_vm).and_return('UPID:pve:stop')
-      allow(api_client).to receive(:wait_for_task)
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       expect(api_client).to receive(:destroy_vm).with(node: 'pve', vm_id: 200)
       driver.destroy(state)
     end
@@ -318,7 +394,7 @@ RSpec.describe Kitchen::Driver::Proxmox do
       state = { vm_id: 200, vm_name: 'kitchen-test-abc123', hostname: '10.0.0.5' }
       allow(api_client).to receive(:vm_status).and_return({ 'status' => 'running' })
       allow(api_client).to receive(:stop_vm).and_return('UPID:pve:stop')
-      allow(api_client).to receive(:wait_for_task)
+      allow(api_client).to receive(:wait_for_task).and_return({ 'status' => 'stopped', 'exitstatus' => 'OK' })
       allow(api_client).to receive(:destroy_vm)
       driver.destroy(state)
       expect(state).not_to have_key(:vm_id)
