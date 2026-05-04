@@ -28,6 +28,26 @@ driver:
   template_id: 9000
 ```
 
+### Cluster-Aware Configuration
+
+For multi-node clusters, the driver can auto-select a node and resolve templates by name:
+
+```yaml
+driver:
+  name: proxmox
+  proxmox_url:
+    - https://pve1.example.com:8006
+    - https://pve2.example.com:8006
+  proxmox_token_id: kitchen@pam!kitchen-token
+  proxmox_token_secret: 00000000-0000-0000-0000-000000000000
+  template_name: ubuntu-2204-cloud
+```
+
+This configuration:
+- Tries `pve1` first; if unreachable, fails over to `pve2`
+- Auto-selects the node with the most free memory
+- Resolves `ubuntu-2204-cloud` to the template's VMID at runtime
+
 To avoid committing secrets, you can use ERB to inject them from environment variables. Test Kitchen processes `.kitchen.yml` as ERB before parsing the YAML:
 
 ```yaml
@@ -54,17 +74,34 @@ You can also put the exports in a `.envrc` (if using [direnv](https://direnv.net
 
 | Key | Description |
 |---|---|
-| `proxmox_url` | Proxmox API URL (e.g. `https://host:8006`) |
+| `proxmox_url` | Proxmox API URL (String or Array for failover) |
 | `proxmox_token_id` | API token ID (`user@realm!token-name`) |
 | `proxmox_token_secret` | API token secret (UUID) |
-| `node` | Proxmox node to create VMs on |
-| `template_id` | VM ID of the template to clone |
+
+### Node Selection
+
+| Key | Default | Description |
+|---|---|---|
+| `node` | `nil` | Pin to a specific Proxmox node (bypasses auto-selection) |
+| `node_pool` | `nil` | Restrict auto-selection to these node names (Array) |
+
+When `node` is omitted, the driver queries the cluster and selects the online node with the most free memory.
+
+### Template Selection
+
+| Key | Default | Description |
+|---|---|---|
+| `template_id` | `nil` | VM ID of the template to clone |
+| `template_name` | `nil` | Template name to resolve (mutually exclusive with `template_id`) |
+
+Set one of `template_id` or `template_name`. When using `template_name`, the driver resolves the name to a VMID via the cluster API, preferring a template on the target node.
 
 ### Optional Settings
 
 | Key | Default | Description |
 |---|---|---|
 | `ssl_verify` | `true` | Verify TLS certificates |
+| `connect_timeout` | `10` | Per-URL connection timeout in seconds |
 | `pool` | `nil` | Proxmox resource pool |
 | `vm_name_prefix` | `kitchen-` | Prefix for generated VM names |
 | `cpus` | `1` | Number of CPU cores |
